@@ -25,6 +25,7 @@ import {
   type MigrationDoc,
 } from "./state/migration.js";
 import { runFresh } from "./phases/fresh.js";
+import { runRepair } from "./phases/repair.js";
 import { commitPhase, setupGit } from "./phases/git.js";
 import { computeEta } from "./phases/eta.js";
 import { DEFAULT_COPILOT_MODEL, DEFAULT_COPILOT_EFFORT } from "./copilot/run.js";
@@ -305,13 +306,30 @@ async function runPhaseStep<T>(
         kind: "select",
         message: `Attempt ${attempt} error: ${truncate(msg, 200)}. What do you want to do?`,
         options: [
-          { label: "Retry this phase", value: "retry" },
+          { label: "Retry (ask Copilot to diagnose & patch first)", value: "retry" },
+          { label: "Retry without Copilot repair", value: "retry-plain" },
           { label: "Skip and continue", value: "skip" },
           { label: "Abort migration", value: "abort" },
         ],
         default: "retry",
       });
       if (ans === "retry") {
+        // Hand the failure to Copilot with the repair prompt so it can
+        // make a surgical fix before the outer loop re-runs the phase.
+        // If Copilot itself errors out we still retry — worst case the
+        // user sees the same failure again and can pick "skip" / "abort".
+        if (!ctx.flags.skipCopilot) {
+          await runRepair(ctx, bus, { phase, error: msg, attempt });
+        } else {
+          bus.pushStreamEvent(undefined, {
+            type: "info",
+            phase,
+            message: `retrying ${phase}… (copilot disabled by --skip-copilot)`,
+          });
+        }
+        continue;
+      }
+      if (ans === "retry-plain") {
         bus.pushStreamEvent(undefined, { type: "info", phase, message: `retrying ${phase}…` });
         continue;
       }

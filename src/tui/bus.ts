@@ -76,7 +76,28 @@ export class UiBus extends EventEmitter {
    * growing line instead of a ladder of one-word rows.
    */
   private live: LiveStream | null = null;
+  /**
+   * Ring buffer of the last few hundred user-facing log lines. Used by
+   * the per-phase repair flow so Copilot gets a tail of the run's
+   * actual output when it's asked to diagnose a failure (the error
+   * message on its own rarely tells the whole story).
+   */
+  private tail: Array<{ ts: number; phase: PhaseId | undefined; kind: string; text: string }> = [];
+  private readonly TAIL_MAX = 400;
   autoAnswer = false;
+
+  /**
+   * Return the most recent {@link UiBus.TAIL_MAX} (or `n`, whichever is
+   * smaller) log lines, optionally filtered by phase. Each line is
+   * prefixed with its kind so a repair prompt reads like a log file.
+   */
+  recentLogs(n = 120, phase?: PhaseId): string {
+    const src = phase ? this.tail.filter((t) => t.phase === phase) : this.tail;
+    return src
+      .slice(-n)
+      .map((t) => `[${t.kind}] ${t.text}`)
+      .join("\n");
+  }
 
   pushStreamEvent(phase: PhaseId | undefined, ev: StreamEvent): void {
     this.emit("stream", phase, ev);
@@ -131,7 +152,11 @@ export class UiBus extends EventEmitter {
     this.live = null;
 
     const entry = this.streamToLog(phase, ev);
-    if (entry) this.emit("log", entry);
+    if (entry) {
+      this.emit("log", entry);
+      this.tail.push({ ts: entry.ts, phase: entry.phase, kind: entry.kind, text: entry.text });
+      if (this.tail.length > this.TAIL_MAX) this.tail.splice(0, this.tail.length - this.TAIL_MAX);
+    }
     if (ev.type === "phase_start") this.emit("phase", phase, "running", ev.message);
     if (ev.type === "phase_ok") this.emit("phase", phase, "ok", ev.message);
     if (ev.type === "phase_fail") this.emit("phase", phase, "fail", ev.message);

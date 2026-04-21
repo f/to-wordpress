@@ -20,7 +20,7 @@ import { applyContextToDoc, loadMigrationDoc, markPhase, saveMigrationDoc } from
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 
-const PACKAGE_VERSION = "0.1.0";
+const PACKAGE_VERSION = "0.1.1";
 
 interface CliOptions {
   skipBoot?: boolean;

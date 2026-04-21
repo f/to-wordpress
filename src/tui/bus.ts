@@ -59,21 +59,23 @@ export class UiBus extends EventEmitter {
   private streamToLog(phase: PhaseId | undefined, ev: StreamEvent): LogEntry | undefined {
     const base = { id: ++this.logId, ts: Date.now(), phase };
     switch (ev.type) {
-      case "message":
-        return { ...base, kind: "assistant", text: ev.text };
-      case "reasoning":
-        return { ...base, kind: "reasoning", text: ev.text };
+      case "message": {
+        const txt = ev.text?.trim();
+        if (!txt) return undefined;
+        return { ...base, kind: "assistant", text: txt };
+      }
+      case "reasoning": {
+        const txt = ev.text?.trim();
+        if (!txt) return undefined;
+        return { ...base, kind: "reasoning", text: txt };
+      }
       case "tool_use":
-        return {
-          ...base,
-          kind: "tool",
-          text: `${ev.name}${ev.input ? " " + safeStringify(ev.input) : ""}`,
-        };
+        return { ...base, kind: "tool", text: describeTool(ev.name, ev.input) };
       case "tool_result":
         return {
           ...base,
           kind: "tool_result",
-          text: `${ev.name ?? "tool"} → ${safeStringify(ev.output)}`,
+          text: describeToolResult(ev.name, ev.output, ev.isError),
         };
       case "error":
         return { ...base, kind: "error", text: ev.message };
@@ -113,15 +115,116 @@ export class UiBus extends EventEmitter {
   }
 }
 
-function safeStringify(v: unknown): string {
+function safeStringify(v: unknown, max = 240): string {
   if (v === undefined) return "";
-  if (typeof v === "string") return v.length > 240 ? v.slice(0, 240) + "…" : v;
+  if (typeof v === "string") return v.length > max ? v.slice(0, max) + "…" : v;
   try {
     const s = JSON.stringify(v);
-    return s.length > 240 ? s.slice(0, 240) + "…" : s;
+    return s.length > max ? s.slice(0, max) + "…" : s;
   } catch {
     return String(v);
   }
+}
+
+/**
+ * Turn a Copilot tool_use event into a one-line human-readable summary so
+ * the Activity pane shows "edit src/foo.ts" instead of dumping raw JSON.
+ */
+function describeTool(name: string, rawInput: unknown): string {
+  const input = (rawInput && typeof rawInput === "object" ? rawInput : {}) as Record<string, unknown>;
+  const lower = name.toLowerCase();
+  const str = (k: string): string | undefined => {
+    const v = input[k];
+    return typeof v === "string" ? v : undefined;
+  };
+  // File read / view
+  if (/read|view/.test(lower)) {
+    const p = str("path") ?? str("file") ?? str("filepath") ?? str("target_file");
+    return p ? `read ${shortPath(p)}` : name;
+  }
+  // File write / create
+  if (/write|create/.test(lower)) {
+    const p = str("path") ?? str("file") ?? str("target_file");
+    return p ? `write ${shortPath(p)}` : name;
+  }
+  // File edit / str-replace
+  if (/edit|strreplace|str_replace|patch/.test(lower)) {
+    const p = str("path") ?? str("target_file") ?? str("file");
+    return p ? `edit ${shortPath(p)}` : name;
+  }
+  // Delete
+  if (/delete|remove/.test(lower)) {
+    const p = str("path") ?? str("target_file") ?? str("file");
+    return p ? `delete ${shortPath(p)}` : name;
+  }
+  // Shell / bash / run
+  if (/shell|bash|run|exec|terminal/.test(lower)) {
+    const cmd = str("command") ?? str("cmd") ?? str("script") ?? str("input");
+    return cmd ? `$ ${singleLine(cmd, 180)}` : name;
+  }
+  // Grep / search
+  if (/grep|search/.test(lower)) {
+    const pat = str("pattern") ?? str("query") ?? str("q");
+    const path = str("path") ?? str("target_directory");
+    return pat ? `grep ${truncate(pat, 60)}${path ? " in " + shortPath(path) : ""}` : name;
+  }
+  // Glob / find
+  if (/glob|find|list/.test(lower)) {
+    const p = str("glob_pattern") ?? str("pattern") ?? str("path") ?? str("target_directory");
+    return p ? `${name.toLowerCase()} ${shortPath(p)}` : name;
+  }
+  // Fetch / web
+  if (/fetch|web|http|curl/.test(lower)) {
+    const url = str("url") ?? str("href");
+    return url ? `fetch ${truncate(url, 120)}` : name;
+  }
+  // Think / plan
+  if (/think|plan|todo/.test(lower)) {
+    return name;
+  }
+  // Fallback: name + compact args
+  const compact = safeStringify(rawInput, 120);
+  return compact ? `${name} ${compact}` : name;
+}
+
+function describeToolResult(name: string | undefined, output: unknown, isError?: boolean): string {
+  const prefix = (name ?? "tool") + " →";
+  if (isError) return `${prefix} error: ${safeStringify(output, 200)}`;
+  if (output == null) return `${prefix} ok`;
+  if (typeof output === "string") {
+    const oneLine = singleLine(output, 180);
+    return `${prefix} ${oneLine}`;
+  }
+  if (Array.isArray(output)) return `${prefix} [${output.length} items]`;
+  if (typeof output === "object") {
+    const obj = output as Record<string, unknown>;
+    const pieces = Object.entries(obj)
+      .slice(0, 3)
+      .map(([k, v]) => `${k}=${safeStringify(v, 40)}`);
+    return `${prefix} ${pieces.join(" ")}`;
+  }
+  return `${prefix} ${safeStringify(output, 180)}`;
+}
+
+function shortPath(p: string): string {
+  if (!p) return p;
+  // Strip a leading absolute workspace-style prefix so paths fit on one line.
+  const m = p.match(/^\/Users\/[^/]+\/[^/]+\/(.+)$/);
+  if (m) return m[1];
+  if (p.length > 80) {
+    const tail = p.slice(-77);
+    return "…" + tail;
+  }
+  return p;
+}
+
+function singleLine(s: string, max: number): string {
+  const flat = s.replace(/\s+/g, " ").trim();
+  return flat.length > max ? flat.slice(0, max) + "…" : flat;
+}
+
+function truncate(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max) + "…" : s;
 }
 
 export const PHASE_TITLES: Record<PhaseId, string> = {

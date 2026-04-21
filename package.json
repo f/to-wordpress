@@ -1,6 +1,6 @@
 {
   "name": "to-wordpress",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Migrate any codebase (Jekyll, Hugo, Ghost, Eleventy, plain HTML, ...) to WordPress. Driven by GitHub Copilot CLI (copilot -p) in a hybrid orchestration model and rendered as an Ink TUI.",
   "type": "module",
   "bin": {

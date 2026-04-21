@@ -30,6 +30,7 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
   const [textValue, setTextValue] = useState("");
   const [showRaw, setShowRaw] = useState(false);
   const [doneExit, setDoneExit] = useState<number | null>(null);
+  const [now, setNow] = useState<number>(Date.now());
   const { isRawModeSupported } = useStdin();
 
   useInput(
@@ -40,6 +41,14 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
     },
     { isActive: isRawModeSupported },
   );
+
+  // Heartbeat tick so the "thinking…" indicator updates even when no new
+  // events have arrived from Copilot recently.
+  useEffect(() => {
+    if (doneExit !== null) return;
+    const iv = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(iv);
+  }, [doneExit]);
 
   useEffect(() => {
     const onLog = (entry: LogEntry) => {
@@ -69,9 +78,14 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
   }, [bus]);
 
   const visibleLogs = useMemo(
-    () => (showRaw ? logs : logs.filter((l) => l.kind !== "raw" && l.kind !== "stderr")).slice(-20),
+    () => (showRaw ? logs : logs.filter((l) => l.kind !== "raw")).slice(-40),
     [logs, showRaw],
   );
+
+  const lastActivityAt = logs.length > 0 ? logs[logs.length - 1].ts : undefined;
+  const runningPhaseId = (Object.values(phases).find((p) => p.status === "running") as PhaseRowState | undefined)?.id;
+  const idleSeconds = lastActivityAt ? Math.max(0, Math.floor((now - lastActivityAt) / 1000)) : 0;
+  const showThinking = doneExit === null && runningPhaseId && idleSeconds >= 3;
 
   return (
     <Box flexDirection="column">
@@ -94,19 +108,40 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
           })}
         </Box>
         <Box flexDirection="column" flexGrow={1} borderStyle="single" paddingX={1}>
-          <Text bold>Activity</Text>
+          <Box>
+            <Text bold>Activity</Text>
+            <Text dimColor>  (last {visibleLogs.length} events)</Text>
+          </Box>
           {visibleLogs.map((l) => (
             <Box key={l.id}>
               <Text color={kindColor(l.kind)}>{kindGlyph(l.kind)} </Text>
               {l.phase ? <Text dimColor>[{l.phase}] </Text> : null}
-              <Text>{truncate(l.text, 160)}</Text>
+              <Text wrap="truncate-end">{truncate(l.text, 240)}</Text>
             </Box>
           ))}
           {visibleLogs.length === 0 ? <Text dimColor>(waiting for activity)</Text> : null}
+          {showThinking ? (
+            <Box marginTop={1}>
+              <Text color="magenta">
+                <Spinner type="dots" /> copilot thinking… (idle {idleSeconds}s in {runningPhaseId})
+              </Text>
+            </Box>
+          ) : null}
         </Box>
       </Box>
 
-      {prompt ? <PromptView bus={bus} prompt={prompt} textValue={textValue} setTextValue={setTextValue} /> : null}
+      {prompt ? (
+        <PromptView
+          bus={bus}
+          prompt={prompt}
+          textValue={textValue}
+          setTextValue={setTextValue}
+          onAnswered={() => {
+            setPrompt(null);
+            setTextValue("");
+          }}
+        />
+      ) : null}
 
       <Box borderStyle="single" paddingX={1}>
         {doneExit === null ? (
@@ -128,17 +163,21 @@ function PromptView({
   prompt,
   textValue,
   setTextValue,
+  onAnswered,
 }: {
   bus: UiBus;
   prompt: PromptRequest;
   textValue: string;
   setTextValue: (v: string) => void;
+  onAnswered: () => void;
 }) {
   const handleSelect = (item: { value: string }) => {
     bus.answerPrompt({ id: prompt.id, value: item.value });
+    onAnswered();
   };
   const handleSubmit = (value: string) => {
     bus.answerPrompt({ id: prompt.id, value });
+    onAnswered();
   };
   return (
     <Box borderStyle="double" borderColor="yellow" paddingX={1} flexDirection="column">

@@ -17,6 +17,11 @@ that later phases can execute without guessing.
 
 - Source directory: `{{SOURCE_DIR}}`
 - SSG kind: `{{KIND}}`
+- Detector briefing (this tells you what kind of migration this is;
+  use it to shape the phases and user-facing narrative in the plan):
+
+> {{DETECTOR_BRIEFING}}
+
 - Detected context (JSON):
 
 ```json

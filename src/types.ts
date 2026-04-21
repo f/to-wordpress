@@ -23,13 +23,33 @@ export interface PhaseState {
 }
 
 export type SsgKind =
+  // Classic SSGs
   | "jekyll"
   | "hugo"
   | "eleventy"
-  | "ghost-export"
   | "gatsby"
   | "next"
+  | "hexo"
+  | "astro"
+  // Documentation frameworks
+  | "docusaurus"
+  | "mkdocs"
+  // CMS / platform exports
+  | "ghost-export"
+  | "wp-wxr"
+  | "medium-export"
+  | "substack-export"
+  // Raw content formats (any text-like dump)
   | "plain-html"
+  | "markdown-folder"
+  | "docx-folder"
+  | "xlsx-sheet"
+  | "pdf-folder"
+  | "text-folder"
+  | "epub-book"
+  // Code repositories (README-driven landing pages)
+  | "github-repo"
+  // Fallback — freestyle detector takes over
   | "unknown";
 
 export interface DetectedContext {
@@ -77,7 +97,50 @@ export interface DetectedContext {
     monospace?: string;
     logo?: string;
   };
+  /**
+   * Non-markdown source files the detector decided are content. The
+   * normalize phase passes each entry through a format-specific Copilot
+   * prompt (see `src/prompts/convert-*.md`) to produce a canonical
+   * markdown file before running the standard normalization flow.
+   *
+   * Leave empty (`[]`) for detectors whose sources are already
+   * markdown/HTML friendly.
+   */
+  rawSources?: Array<{
+    path: string;
+    /** The `convert-<format>.md` prompt to use. */
+    format: RawSourceFormat;
+    /** Optional hint passed through to the prompt. */
+    hint?: string;
+    /** Default post type for items coming from this source. */
+    postType?: string;
+  }>;
+  /**
+   * Free-form human guidance the detector wants to pass through to every
+   * Copilot-driven phase (theme, plugin, normalize conversion, verify,
+   * fix). Kept short — one paragraph max. E.g. "this is a GitHub repo's
+   * README; produce a SaaS landing page with feature grid + install CTA."
+   */
+  detectorBriefing?: string;
 }
+
+/**
+ * Every format that to-wordpress can ingest. The format decides which
+ * `convert-<format>.md` prompt is used to turn the raw file(s) into the
+ * canonical markdown that the normalize phase then imports.
+ */
+export type RawSourceFormat =
+  | "docx"
+  | "xlsx"
+  | "csv"
+  | "pdf"
+  | "epub"
+  | "txt"
+  | "html"
+  | "wxr"
+  | "medium-html"
+  | "substack"
+  | "readme";
 
 export interface PageSummary {
   sourcePath: string;

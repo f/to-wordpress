@@ -33,7 +33,7 @@ Write one JSON file at `{{OUTPUT_PATH}}` with exactly these keys (use
 
 ```json
 {
-  "kind": "jekyll | hugo | eleventy | gatsby | next | ghost-export | plain-html | unknown",
+  "kind": "jekyll | hugo | eleventy | gatsby | next | hexo | astro | docusaurus | mkdocs | ghost-export | wp-wxr | medium-export | substack-export | plain-html | markdown-folder | docx-folder | xlsx-sheet | pdf-folder | text-folder | epub-book | github-repo | unknown",
   "siteTitle": "string or null",
   "domain": "https://… or null",
   "themeSlug": "lowercase-kebab-case",

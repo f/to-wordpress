@@ -171,6 +171,7 @@ export async function runPlan(ctx: MigrationContext, bus: UiBus): Promise<UserCh
     const prompt = interpolate(tpl, {
       SOURCE_DIR: ctx.sourceDir,
       KIND: detected.kind,
+      DETECTOR_BRIEFING: detected.detectorBriefing ?? "(no detector briefing)",
       DETECTED_JSON: JSON.stringify(detected, null, 2),
       CHOICES_JSON: JSON.stringify(choices, null, 2),
       PLAN_PATH: ctx.planPath,

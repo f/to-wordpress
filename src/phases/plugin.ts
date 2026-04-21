@@ -33,6 +33,8 @@ export async function runPlugin(ctx: MigrationContext, bus: UiBus): Promise<void
     PLUGIN_SLUG_UNDERSCORED: pluginSlugUnderscored,
     THEME_SLUG: detected.themeSlug,
     SITE_TITLE: detected.siteTitle ?? detected.themeSlug,
+    SOURCE_KIND: detected.kind,
+    DETECTOR_BRIEFING: detected.detectorBriefing ?? "(no detector briefing)",
     DETECTED_JSON: JSON.stringify(detected, null, 2),
     CHOICES_JSON: JSON.stringify(choices, null, 2),
     SHORTCODES_JSON: JSON.stringify(discoveredShortcodes, null, 2),

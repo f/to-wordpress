@@ -2,13 +2,17 @@
 
 <img src="./assets/logo.png" alt="to-wordpress — migrate anything to WordPress" width="720" />
 
-**Migrate any codebase to WordPress — powered by GitHub Copilot CLI.**
+**Migrate anything text-shaped to WordPress — powered by GitHub Copilot CLI.**
 
-Point it at a Jekyll, Hugo, Eleventy, Ghost, Gatsby, Next, or plain-HTML site.
-Walk away. Come back to a fully working, pixel-close WordPress under
+Point it at a Jekyll / Hugo / Eleventy / Gatsby / Next / Astro / Hexo /
+Docusaurus / MkDocs site, a WordPress WXR export, a Medium or Substack
+export, a folder of Word documents, a spreadsheet of rows, a library of
+PDFs, an EPUB, a GitHub repo README, a pile of markdown notes, or plain
+`.txt` files. Walk away. Come back to a fully working, pixel-close
+WordPress under
 [`wp-env`](https://developer.wordpress.org/block-editor/getting-started/devenv/get-started-with-wp-env/)
-with a custom theme, a site plugin, imported content and media, preserved
-permalinks, and a self-verified build.
+with a custom theme, a site plugin, imported content and media,
+preserved permalinks (where they existed), and a self-verified build.
 
 [![npm](https://img.shields.io/npm/v/to-wordpress.svg?logo=npm&labelColor=222)](https://www.npmjs.com/package/to-wordpress)
 [![downloads](https://img.shields.io/npm/dm/to-wordpress.svg?labelColor=222)](https://www.npmjs.com/package/to-wordpress)
@@ -142,20 +146,95 @@ phase dashboard, activity log, and approval prompts.
 
 ## Supported sources
 
-| Source | Confidence | What ships |
-|---|---|---|
-| Jekyll | 🟢 battle-tested | Posts (`collections/_posts/*.md` + any `collections/<x>/`), pages, layouts, includes, sass, `_data/*`, feature-level detection (giscus, mailchimp, analytics, dark mode, OG/Twitter) |
-| Hugo | 🟡 detector + normalizer | Content sections → collections/CPTs, `layouts/**/*.html`, `data/**/*`, `static/` |
-| Eleventy | 🟡 detector + normalizer | `src/` or `content/` posts, njk/liquid/hbs layouts |
-| Gatsby | 🟡 detector + normalizer | `src/pages/*.{tsx,jsx}` + `content/**/*.md(x)` |
-| Next.js | 🟡 detector + normalizer | App/Pages router + `content/` / `posts/` / `blog/` markdown |
-| Ghost export | 🟡 detector + normalizer | Ghost JSON dump (`posts`, `tags`, `users`) |
-| Plain HTML | 🟢 fallback | Every `.html` file as a page, every `.md` file as a post |
-| **Anything else** | 🟢 freestyle | Deterministic file walker + Copilot-driven schema fill — never skips a folder |
+`to-wordpress` ships detectors for every shape of content we've seen —
+from real SSGs down to "a folder of PDFs". Each detector emits a
+**detector briefing** that steers the theme, plugin, plan, and
+normalize phases; binary/tabular formats are first routed through a
+per-format conversion prompt (see [`src/prompts/convert-*.md`](./src/prompts/))
+that turns the raw source into canonical markdown before the rest of
+the pipeline runs.
 
-Adding a new built-in detector is ~60 lines — drop a file in
-[`src/detectors/`](./src/detectors/), implement `match()` + `detect()`,
-register it in [`src/detectors/index.ts`](./src/detectors/index.ts).
+### Static-site generators
+
+| Source | Kind | What ships |
+|---|---|---|
+| Jekyll | `jekyll` | Posts (`_posts/`, `_drafts/`) + any `collections/<x>/`, pages, layouts, includes, sass, `_data/*`, feature-level detection (giscus, mailchimp, analytics, dark mode, OG/Twitter) |
+| Hugo | `hugo` | Content sections → collections/CPTs, `layouts/**/*.html`, `data/**/*`, `static/` |
+| Eleventy | `eleventy` | `src/` or `content/` posts, njk/liquid/hbs layouts |
+| Hexo | `hexo` | `source/_posts/` posts + `source/*.md` pages, permalink preserved from `_config.yml` |
+| Astro | `astro` | `src/content/<collection>/` collections + `src/pages/*.{astro,md,mdx}` pages |
+| Gatsby | `gatsby` | `src/pages/*.{tsx,jsx}` + `content/**/*.md(x)` |
+| Next.js | `next` | App/Pages router + `content/` / `posts/` / `blog/` markdown |
+
+### Documentation frameworks
+
+| Source | Kind | What ships |
+|---|---|---|
+| Docusaurus | `docusaurus` | `docs/` → docs collection, `blog/` → posts, admonitions → Gutenberg groups |
+| MkDocs (+ Material) | `mkdocs` | `docs/` collection, mkdocs.yml nav mirrored in WordPress menu |
+
+### CMS / platform exports
+
+| Source | Kind | What ships |
+|---|---|---|
+| WordPress WXR | `wp-wxr` | Full `.xml` dump: posts, pages, CPTs, categories, tags, authors, featured images |
+| Ghost export | `ghost-export` | Ghost JSON dump (`posts`, `tags`, `users`) |
+| Medium export | `medium-export` | `posts/<date>_<slug>.html` → posts, gists/tweets → Gutenberg embeds, canonical URL preserved |
+| Substack export | `substack-export` | `posts.csv` + `posts/<id>.html` → posts, paid-only → `private`, podcasts → podcast CPT |
+
+### Raw documents / text piles
+
+| Source | Kind | What ships |
+|---|---|---|
+| Word bundle | `docx-folder` | Folder of `.docx` / `.doc` / `.rtf` → one post per document (pandoc/mammoth) |
+| Spreadsheet | `xlsx-sheet` | `.xlsx` / `.xls` / `.csv` / `.tsv` → one post per row, column → front-matter field |
+| PDF library | `pdf-folder` | Folder of `.pdf` → one post per document, figures become Gutenberg image blocks |
+| EPUB books | `epub-book` | One `.epub` → one post per chapter, book metadata → site identity |
+| Plain text | `text-folder` | Folder of `.txt` / `.rst` → one post per file (first line = title) |
+| Markdown pile | `markdown-folder` | Obsidian / Notion / Zettelkasten exports, wiki-links preserved |
+| Plain HTML | `plain-html` | Every `.html` file as a page, every `.md` file as a post |
+
+### Code repos
+
+| Source | Kind | What ships |
+|---|---|---|
+| GitHub repo | `github-repo` | README → SaaS landing page (hero + feature grid + install CTA), `docs/` → docs collection, LICENSE/CHANGELOG/CONTRIBUTING → separate pages |
+
+### Fallback
+
+| Source | Kind | What ships |
+|---|---|---|
+| **Anything else** | `unknown` | Deterministic file walker + Copilot-driven schema fill — never skips a folder |
+
+### Per-format conversion prompts
+
+Formats that aren't already markdown are routed through a Copilot
+prompt before normalize runs. Each prompt lives in `src/prompts/` and
+is self-contained:
+
+- [`convert-docx.md`](./src/prompts/convert-docx.md) — Word documents
+- [`convert-xlsx.md`](./src/prompts/convert-xlsx.md) — Excel workbooks
+- [`convert-csv.md`](./src/prompts/convert-csv.md) — CSV / TSV
+- [`convert-pdf.md`](./src/prompts/convert-pdf.md) — PDFs
+- [`convert-epub.md`](./src/prompts/convert-epub.md) — EPUB books
+- [`convert-txt.md`](./src/prompts/convert-txt.md) — plain text / RST
+- [`convert-html.md`](./src/prompts/convert-html.md) — generic HTML pages
+- [`convert-wxr.md`](./src/prompts/convert-wxr.md) — WordPress WXR
+- [`convert-medium-html.md`](./src/prompts/convert-medium-html.md) — Medium export
+- [`convert-substack.md`](./src/prompts/convert-substack.md) — Substack export
+- [`convert-readme.md`](./src/prompts/convert-readme.md) — GitHub README → landing page
+
+### Adding a new source type
+
+~60 lines of code and one prompt:
+
+1. Drop a detector file in [`src/detectors/`](./src/detectors/),
+   implement `match()` + `detect()`.
+2. Register it in [`src/detectors/index.ts`](./src/detectors/index.ts).
+3. If the source isn't already markdown, declare `rawSources[]` on
+   the `DetectedContext`, pick (or add) a `RawSourceFormat` in
+   [`src/types.ts`](./src/types.ts), and write a
+   `src/prompts/convert-<format>.md`.
 
 ## CLI
 

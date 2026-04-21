@@ -22,6 +22,14 @@ image, empty menu, or swapped class list is a hard failure.
 - Text domain: `{{THEME_SLUG}}` (use this identifier for every `__()`,
   `_e()`, `_x()`, etc.)
 
+## Source kind
+
+This source was identified as **`{{SOURCE_KIND}}`**. The detector's
+briefing (read this BEFORE anything else — it tells you what to
+produce for this particular source shape):
+
+> {{DETECTOR_BRIEFING}}
+
 ## Ground-truth reference
 
 {{RENDERED_REFERENCE}}

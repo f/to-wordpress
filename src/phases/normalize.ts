@@ -6,6 +6,7 @@ import { stringify as yamlStringify } from "yaml";
 import type { MigrationContext, UserChoices, DetectedContext } from "../types.js";
 import { interpolate, loadPrompt } from "../prompts/index.js";
 import { runCopilotPhase } from "./theme.js";
+import { runConvert } from "./convert.js";
 import type { UiBus } from "../tui/bus.js";
 
 export interface NormalizedRef {
@@ -30,6 +31,15 @@ export async function runNormalize(ctx: MigrationContext, bus: UiBus): Promise<N
 
   await mkdir(ctx.contentDir, { recursive: true });
   await mkdir(ctx.mediaDir, { recursive: true });
+
+  // If the detector flagged raw (non-markdown) source files —
+  // .docx / .xlsx / .pdf / WXR / Medium export HTML / README landing
+  // page / substack CSV / EPUB / plain text — run the per-format
+  // Copilot conversion BEFORE walking markdown. The conversion step
+  // writes canonical `.md` files under `workDir/converted/<fmt>/...`
+  // and appends those dirs to `detected.collections` so the loop
+  // below picks them up transparently.
+  await runConvert(ctx, bus);
 
   const items: NormalizedRef[] = [];
   const mediaCopied = new Set<string>();

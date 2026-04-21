@@ -7,17 +7,55 @@ import { eleventyDetector } from "./eleventy.js";
 import { gatsbyDetector } from "./gatsby.js";
 import { nextDetector } from "./next.js";
 import { ghostDetector } from "./ghost.js";
+import { hexoDetector } from "./hexo.js";
+import { astroDetector } from "./astro.js";
+import { docusaurusDetector } from "./docusaurus.js";
+import { mkdocsDetector } from "./mkdocs.js";
+import { wpWxrDetector } from "./wp-wxr.js";
+import { mediumExportDetector } from "./medium-export.js";
+import { substackExportDetector } from "./substack-export.js";
+import { docxDetector } from "./docx.js";
+import { xlsxDetector } from "./xlsx.js";
+import { pdfDetector } from "./pdf.js";
+import { epubDetector } from "./epub.js";
+import { githubRepoDetector } from "./github-repo.js";
+import { markdownFolderDetector } from "./markdown-folder.js";
+import { textFolderDetector } from "./text-folder.js";
 import { plainHtmlDetector } from "./plain-html.js";
 import { freestyleDetector } from "./freestyle.js";
 
+/**
+ * Ordering matters: detectors with stronger signals (explicit SSG
+ * config files, platform-export fingerprints) should come first so
+ * their higher `priority` breaks ties cleanly. The order below is
+ * roughly "most specific → most generic".
+ */
 export const BUILT_IN_DETECTORS: Detector[] = [
+  // Platform exports — strongest signals (unique XML / CSV layouts)
+  wpWxrDetector,
+  mediumExportDetector,
+  substackExportDetector,
+  // SSG frameworks with explicit config files
+  docusaurusDetector,
+  astroDetector,
+  mkdocsDetector,
+  hexoDetector,
   jekyllDetector,
   hugoDetector,
   eleventyDetector,
   gatsbyDetector,
   nextDetector,
   ghostDetector,
+  // Binary / tabular document bundles
+  docxDetector,
+  xlsxDetector,
+  pdfDetector,
+  epubDetector,
+  // Generic repos & text piles
+  githubRepoDetector,
   plainHtmlDetector,
+  markdownFolderDetector,
+  textFolderDetector,
 ];
 
 export { freestyleDetector };

@@ -25,6 +25,10 @@ change; they do NOT belong in the theme.
 
 ## Inputs
 
+Source kind: **`{{SOURCE_KIND}}`**. Detector briefing (read first):
+
+> {{DETECTOR_BRIEFING}}
+
 Detected context:
 
 ```json

@@ -41,6 +41,43 @@ export const CONTENT_EXTENSIONS = new Set([
   ".pug",
 ]);
 
+/**
+ * Map of "binary / rich-content" file extensions to the `convert-<format>.md`
+ * prompt that should transform them into canonical markdown. Detectors use
+ * this list to decide whether the source tree is e.g. a folder of Word
+ * docs or a tree of PDFs, and to populate `DetectedContext.rawSources`.
+ */
+export const RAW_SOURCE_EXTENSIONS: Record<string, string> = {
+  ".docx": "docx",
+  ".doc": "docx",
+  ".rtf": "docx",
+  ".xlsx": "xlsx",
+  ".xlsm": "xlsx",
+  ".xls": "xlsx",
+  ".csv": "csv",
+  ".tsv": "csv",
+  ".pdf": "pdf",
+  ".epub": "epub",
+  ".txt": "txt",
+  ".rst": "txt",
+  ".xml": "wxr",
+};
+
+export function extOf(path: string): string {
+  const i = path.lastIndexOf(".");
+  return i === -1 ? "" : path.slice(i).toLowerCase();
+}
+
+/** Count files by extension for a walked file list. Useful in `match()`. */
+export function countByExt(files: string[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const f of files) {
+    const e = extOf(f);
+    out[e] = (out[e] ?? 0) + 1;
+  }
+  return out;
+}
+
 export async function listFiles(dir: string, ext?: string): Promise<string[]> {
   if (!existsSync(dir)) return [];
   const out: string[] = [];

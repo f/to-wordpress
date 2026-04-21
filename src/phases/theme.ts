@@ -47,6 +47,8 @@ export async function runTheme(ctx: MigrationContext, bus: UiBus): Promise<void>
     SITE_TITLE: detected.siteTitle ?? detected.themeSlug,
     LAYOUTS_LIST: detected.layouts.join("\n"),
     DETECTED_JSON: JSON.stringify(detected, null, 2),
+    DETECTOR_BRIEFING: detected.detectorBriefing ?? "(no detector briefing)",
+    SOURCE_KIND: detected.kind,
     PAGES_TABLE: pagesTable,
     FRONT_PAGE_SLUG: ctx.choices?.frontPageSlug ?? "(none)",
     BLOG_INDEX_PAGE_SLUG: ctx.choices?.blogIndexPageSlug ?? "(none)",

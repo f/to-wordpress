@@ -172,7 +172,36 @@ async function main(): Promise<void> {
     if (doc.detected) ctx.detected = doc.detected;
     if (doc.choices) ctx.choices = doc.choices;
     if (doc.copilotSessionId) ctx.copilotSessionId = doc.copilotSessionId;
+    // A phase marked "running" means a prior invocation died mid-phase
+    // (Ctrl-C, crash, etc.). Reset those to "pending" so resume mode
+    // re-runs them instead of treating them as complete or blocking.
+    for (const id of Object.keys(doc.phases) as PhaseId[]) {
+      if (doc.phases[id].status === "running") {
+        doc.phases[id].status = "pending";
+        doc.phases[id].notes = "recovered from interrupted run";
+      }
+    }
     await hydrateWpUrl(ctx);
+
+    // If the user explicitly re-targeted phases via --from/--only/--until
+    // we honor those exactly. Otherwise, auto-resume: any phase already
+    // marked "ok" in WORDPRESS_MIGRATION.md is skipped so we pick up
+    // where the last run left off instead of redoing detection,
+    // theme/plugin generation, normalization, etc.
+    const explicitRange = Boolean(opts.from || opts.only || opts.until);
+    const resumeMode = !explicitRange && !opts.fresh;
+    if (resumeMode) {
+      const completed = (Object.keys(doc.phases) as PhaseId[]).filter(
+        (id) => doc.phases[id].status === "ok",
+      );
+      if (completed.length > 0) {
+        bus.pushStreamEvent(undefined, {
+          type: "info",
+          phase: "detect",
+          message: `resuming from prior run — skipping already-completed phases: ${completed.join(", ")} (pass --fresh to start over, --from <phase> to force a specific rerun)`,
+        });
+      }
+    }
 
     const step = async <T,>(
       phase: PhaseId,
@@ -180,6 +209,14 @@ async function main(): Promise<void> {
       run: () => Promise<T>,
     ): Promise<T | undefined> => {
       if (!condition || !filter(phase)) return undefined;
+      if (resumeMode && doc.phases[phase]?.status === "ok") {
+        bus.pushStreamEvent(undefined, {
+          type: "info",
+          phase,
+          message: `${PHASE_TITLES[phase]}: already complete, skipping (resume)`,
+        });
+        return undefined;
+      }
       return runPhaseStep(ctx, bus, doc, phase, gitEnabled, run);
     };
 
@@ -280,10 +317,44 @@ async function runPhaseStep<T>(
       }
       if (ans === "skip") {
         markPhase(doc, phase, "skipped", `user skipped after ${attempt} attempt${attempt === 1 ? "" : "s"}`);
-        await saveAndApply(ctx, doc, `skipped ${phase}`, bus);
-        if (gitEnabled) await commitPhase(ctx, `${phase} (skipped)`, bus, { active: true });
+        // Persist the skip decision BEFORE the next phase starts so a
+        // subsequent crash (or Ctrl-C) still reflects the correct state.
+        try {
+          await saveAndApply(ctx, doc, `skipped ${phase}`, bus);
+        } catch (saveErr) {
+          bus.pushStreamEvent(undefined, {
+            type: "warn",
+            phase,
+            message: `could not save state after skipping ${phase}: ${(saveErr as Error).message}`,
+          });
+        }
+        if (gitEnabled) {
+          try {
+            await commitPhase(ctx, `${phase} (skipped)`, bus, { active: true });
+          } catch (gitErr) {
+            bus.pushStreamEvent(undefined, {
+              type: "warn",
+              phase,
+              message: `git commit after skip failed: ${(gitErr as Error).message} — continuing`,
+            });
+          }
+        }
+        bus.pushStreamEvent(undefined, {
+          type: "info",
+          phase,
+          message: `${PHASE_TITLES[phase]} skipped — continuing with the next phase`,
+        });
         return undefined;
       }
+      if (ans === "abort") {
+        bus.pushStreamEvent(undefined, {
+          type: "info",
+          phase,
+          message: `${PHASE_TITLES[phase]} aborted by user`,
+        });
+        throw err;
+      }
+      // Unknown response (e.g. prompt torn down by shutdown) — treat as abort.
       throw err;
     }
   }

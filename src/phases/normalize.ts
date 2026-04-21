@@ -105,6 +105,22 @@ export async function runNormalize(ctx: MigrationContext, bus: UiBus): Promise<N
     "utf8",
   );
 
+  // Write the discovered-shortcode manifest so the Plugin phase can
+  // register PHP handlers for every Liquid include the content used.
+  const discoveredShortcodes = Array.from(ctx.shortcodes ?? []).sort();
+  await writeFile(
+    join(ctx.workDir, "shortcodes.json"),
+    JSON.stringify({ shortcodes: discoveredShortcodes }, null, 2) + "\n",
+    "utf8",
+  );
+  if (discoveredShortcodes.length > 0) {
+    bus.pushStreamEvent("normalize", {
+      type: "info",
+      phase: "normalize",
+      message: `detected ${discoveredShortcodes.length} custom shortcode(s): ${discoveredShortcodes.join(", ")}`,
+    });
+  }
+
   bus.pushStreamEvent("normalize", { type: "phase_ok", phase: "normalize" });
   return { items, mediaCopied: [...mediaCopied], failures };
 }
@@ -128,6 +144,11 @@ async function normalizeOne(
   const featured = (parsed.data.image as string | undefined) ?? (parsed.data.featured_image as string | undefined);
 
   let body = parsed.content;
+  // Translate Liquid `{% include ... %}` shortcodes (Jekyll "chirpy" and
+  // Bootstrap-style themes use these for figure/video/button/alert blocks)
+  // into Gutenberg blocks or WordPress shortcodes BEFORE media rewriting,
+  // so the `src=` URL inside a figure include still gets its asset copied.
+  body = translateLiquidIncludes(body, ctx);
   const { body: body2, copied } = await rewriteMedia(body, srcPath, detected, ctx);
   for (const c of copied) mediaCopied.add(c);
   body = body2;
@@ -148,7 +169,7 @@ async function normalizeOne(
     date,
     updated: (parsed.data.updated as string | undefined) ?? undefined,
     author: (parsed.data.author as string | undefined) ?? undefined,
-    status: (parsed.data.published === false ? "draft" : "publish") as "publish" | "draft",
+    status: deriveStatus(parsed.data, srcPath),
     excerpt: (parsed.data.excerpt as string | undefined) ?? description,
     categories,
     tags,
@@ -310,6 +331,183 @@ function humanize(s: string): string {
     .replace(/[-_]+/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase())
     .trim();
+}
+
+// ─── Liquid shortcode translation ──────────────────────────────────────
+//
+// Jekyll themes frequently use `{% include path/to/thing.html k="v" ... %}`
+// where the included partial is effectively a shortcode (figure, video,
+// alert, button, giscus, newsletter, etc.). Copying them verbatim into
+// WordPress leaves raw Liquid markup in the rendered post body — the user
+// saw this as visible `{% include framework/shortcodes/figure.html …`
+// text in their migrated site. We translate every Liquid include:
+//
+//   - Known media-like shortcodes (figure / video / youtube) render as
+//     proper Gutenberg block comments that the WP editor recognizes.
+//   - Everything else becomes a WordPress shortcode `[wpify_<name> ... ]`,
+//     and the set of shortcode names is persisted so the Plugin phase can
+//     register handlers for each one.
+//
+// The context is shared via ctx's persisted `shortcodes` set written to
+// `WORDPRESS_MIGRATION/shortcodes.json` by the normalize phase and read
+// back by the plugin phase (see pluginGenerateShortcodes).
+
+const LIQUID_INCLUDE_RE =
+  /\{%\s*include(?:_relative)?\s+([^\s%]+)\s*([^%]*?)%\}/g;
+
+function translateLiquidIncludes(body: string, ctx: MigrationContext): string {
+  if (!body.includes("{%")) return body;
+  ctx.shortcodes ??= new Set<string>();
+  return body.replace(LIQUID_INCLUDE_RE, (_whole, path: string, attrsRaw: string) => {
+    const name = pathToShortcodeName(path);
+    const attrs = parseLiquidAttrs(attrsRaw);
+    switch (name) {
+      case "figure":
+      case "image":
+        return renderFigureBlock(attrs);
+      case "video":
+        return renderVideoBlock(attrs);
+      case "youtube":
+      case "youtubevideo":
+        return renderYouTubeBlock(attrs);
+      case "button":
+        return renderButtonBlock(attrs);
+      case "callout":
+      case "alert":
+      case "notice":
+        return renderCalloutBlock(attrs, name);
+      default:
+        ctx.shortcodes!.add(name);
+        return renderGenericShortcode(name, attrs);
+    }
+  });
+}
+
+function pathToShortcodeName(path: string): string {
+  const cleaned = path.replace(/^['"“”‟]+|['"“”‟]+$/g, "");
+  const m = cleaned.match(/([^/\\]+)(?:\.html?)?$/);
+  const base = (m ? m[1] : cleaned).replace(/\.html?$/i, "");
+  return base.replace(/[^\w-]/g, "_").toLowerCase();
+}
+
+/**
+ * Parse Liquid-style attribute strings, accepting straight quotes, single
+ * quotes, curly/smart quotes (copy-paste from fancy Jekyll source often
+ * has `src=“/path/foo.webp”`), and bare values.
+ */
+function parseLiquidAttrs(s: string): Record<string, string> {
+  const attrs: Record<string, string> = {};
+  const re =
+    /(\w[\w-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|[\u201C\u201F]([^\u201D\u201F]*)[\u201D\u201F]|(\S+))/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s)) !== null) {
+    const key = m[1];
+    const val = m[2] ?? m[3] ?? m[4] ?? m[5] ?? "";
+    attrs[key] = val.trim();
+  }
+  return attrs;
+}
+
+function attrEscape(s: string): string {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function wpBlock(name: string, inner: string, attrs?: Record<string, unknown>): string {
+  const suffix = attrs && Object.keys(attrs).length > 0 ? " " + JSON.stringify(attrs) : "";
+  return `\n\n<!-- wp:${name}${suffix} -->\n${inner}\n<!-- /wp:${name} -->\n\n`;
+}
+
+function renderFigureBlock(a: Record<string, string>): string {
+  const src = a.src ?? a.url ?? a.image ?? "";
+  if (!src) return "";
+  const alt = attrEscape(a.alt || a.title || a.caption || "");
+  const cls = ["wp-block-image", a.class ?? "size-full"].filter(Boolean).join(" ");
+  const imgTag = `<img src="${attrEscape(src)}" alt="${alt}"${a.width ? ` width="${attrEscape(a.width)}"` : ""}${a.height ? ` height="${attrEscape(a.height)}"` : ""}/>`;
+  const inner = a.link
+    ? `<a href="${attrEscape(a.link)}"${a.target ? ` target="${attrEscape(a.target)}" rel="noopener"` : ""}>${imgTag}</a>`
+    : imgTag;
+  const caption = a.caption
+    ? `<figcaption class="wp-element-caption">${attrEscape(a.caption)}</figcaption>`
+    : "";
+  return wpBlock("image", `<figure class="${cls}">${inner}${caption}</figure>`);
+}
+
+function renderVideoBlock(a: Record<string, string>): string {
+  const src = a.src ?? a.url ?? "";
+  if (!src) return "";
+  const poster = a.poster ? ` poster="${attrEscape(a.poster)}"` : "";
+  const controls = a.controls === "false" ? "" : " controls";
+  return wpBlock(
+    "video",
+    `<figure class="wp-block-video"><video${controls}${poster} src="${attrEscape(src)}"></video>${a.caption ? `<figcaption class="wp-element-caption">${attrEscape(a.caption)}</figcaption>` : ""}</figure>`,
+  );
+}
+
+function renderYouTubeBlock(a: Record<string, string>): string {
+  const id = a.id ?? a.video ?? a.youtube ?? a.src ?? "";
+  if (!id) return "";
+  const url = id.startsWith("http") ? id : `https://www.youtube.com/watch?v=${id}`;
+  return wpBlock(
+    "embed",
+    `<figure class="wp-block-embed is-type-video is-provider-youtube wp-block-embed-youtube"><div class="wp-block-embed__wrapper">${attrEscape(url)}</div></figure>`,
+    { url, type: "video", providerNameSlug: "youtube", responsive: true },
+  );
+}
+
+function renderButtonBlock(a: Record<string, string>): string {
+  const href = a.link ?? a.href ?? a.url ?? "#";
+  const label = a.label ?? a.text ?? a.title ?? "Read more";
+  const target = a.target ? ` target="${attrEscape(a.target)}" rel="noopener"` : "";
+  return wpBlock(
+    "buttons",
+    `<div class="wp-block-buttons"><!-- wp:button -->\n<div class="wp-block-button"><a class="wp-block-button__link" href="${attrEscape(href)}"${target}>${attrEscape(label)}</a></div>\n<!-- /wp:button --></div>`,
+  );
+}
+
+function renderCalloutBlock(a: Record<string, string>, name: string): string {
+  const color = a.color ?? a.type ?? "info";
+  const body = a.text ?? a.body ?? a.content ?? "";
+  return wpBlock(
+    "group",
+    `<div class="wp-block-group wpify-callout wpify-callout--${attrEscape(color)}"><p><strong>${attrEscape(name.toUpperCase())}:</strong> ${attrEscape(body)}</p></div>`,
+    { className: `wpify-callout wpify-callout--${color}` },
+  );
+}
+
+function renderGenericShortcode(name: string, a: Record<string, string>): string {
+  const shortName = `wpify_${name}`;
+  const attrs = Object.entries(a)
+    .map(([k, v]) => `${k}="${attrEscape(v)}"`)
+    .join(" ");
+  // Wrap in a shortcode block so Gutenberg edits it as a single node.
+  return `\n\n<!-- wp:shortcode -->\n[${shortName}${attrs ? " " + attrs : ""}]\n<!-- /wp:shortcode -->\n\n`;
+}
+
+/**
+ * Derive a WordPress post status from the source front-matter, preserving
+ * drafts rather than blindly publishing everything. Recognizes the common
+ * SSG conventions:
+ *   - Jekyll `_drafts/` directory (anything in it is a draft)
+ *   - `published: false` (Jekyll 3/4)
+ *   - `draft: true` (Hugo, Eleventy, Astro, Next-content)
+ *   - `status: draft|publish|private|pending` explicit override
+ */
+function deriveStatus(
+  data: Record<string, unknown>,
+  srcPath: string,
+): "publish" | "draft" | "private" | "pending" {
+  const explicit = String(data.status ?? "").toLowerCase();
+  if (explicit === "draft" || explicit === "publish" || explicit === "private" || explicit === "pending") {
+    return explicit as "publish" | "draft" | "private" | "pending";
+  }
+  if (data.published === false) return "draft";
+  if (data.draft === true) return "draft";
+  if (/[\\/]_drafts[\\/]/.test(srcPath)) return "draft";
+  return "publish";
 }
 
 function slugify(s: string): string {

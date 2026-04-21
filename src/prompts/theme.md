@@ -143,6 +143,14 @@ Parts read their arguments from `$args` (WP ≥ 5.5).
    same order in your PHP output. Do not invent or omit classes.
 5. **Image URLs.** Any `/assets/…` path in the reference becomes
    `<?php echo esc_url( get_template_directory_uri() ); ?>/assets/…`.
+5a. **External links.** Any `href` that starts with `http://`, `https://`,
+   `mailto:`, `tel:`, `//`, or `#` MUST be output verbatim through
+   `esc_url($url)`. Do NOT prepend `home_url()`, `site_url()`, or a
+   relative base, and do NOT concatenate `./` in front of them. Only
+   SITE-RELATIVE paths (`/about/`, `posts/foo/`) get wrapped with
+   `home_url()`. A menu item whose data URL is `https://github.com/foo`
+   must render as `href="<?php echo esc_url( $item['url'] ); ?>"` with
+   no base, not `href="./<?php ... ?>"` and not `home_url('https://…')`.
 6. **i18n.** Every user-visible string goes through `__()` or `esc_html__()`
    with text domain `{{THEME_SLUG}}`. Do not translate dynamic strings.
 7. **Escaping.** Output escaping is mandatory: `esc_html` for text,

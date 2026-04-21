@@ -43,9 +43,16 @@ User choices:
 
 - `{{PLUGIN_SLUG}}.php` — only the WordPress plugin header comment and a
   `foreach` that `require_once`'s every `includes/*.php`. Standard header
-  fields: `Plugin Name`, `Plugin URI`, `Description`, `Version: 0.1.0`,
-  `Requires at least: 6.3`, `Requires PHP: 8.1`, `License: GPL-2.0-or-later`,
-  `Text Domain: {{PLUGIN_SLUG}}`.
+  fields, with HUMAN-READABLE metadata (WordPress's plugin list displays
+  `Plugin Name` as-is):
+  - `Plugin Name: {{SITE_TITLE}} Site` (e.g. if the migrated site title is
+    "F. Kadev", use `Plugin Name: F. Kadev Site`). Never emit the raw
+    slug as the plugin name.
+  - `Plugin URI`, `Description: Site-specific plugin for {{SITE_TITLE}} —
+    CPTs, shortcodes, analytics, redirects, and other non-theme features
+    migrated by to-wordpress.`,
+  - `Version: 0.1.0`, `Requires at least: 6.3`, `Requires PHP: 8.1`,
+  - `License: GPL-2.0-or-later`, `Text Domain: {{PLUGIN_SLUG}}`.
   Guard with `if ( ! defined( 'ABSPATH' ) ) { exit; }`.
 - `readme.txt` — standard WP plugin readme with Stable tag `0.1.0`.
 - `uninstall.php` — deletes plugin options + CPT/meta registered here
@@ -161,6 +168,34 @@ featured image attachment. Never a generic placeholder.
 Port each `_source_includes/shortcodes/*.html` to
 `add_shortcode('{{PLUGIN_SLUG_UNDERSCORED}}_<name>', …)`. Maintain the
 exact attribute names the source used.
+
+Additionally, the normalize phase rewrote every Liquid `{% include %}` in
+post/page content into a WordPress shortcode. Register a handler for every
+entry below so no raw shortcode text leaks to the rendered page — an
+unregistered shortcode renders as `[wpify_xyz …]` in the post which is
+strictly worse than the original Liquid output. The required names are:
+
+```json
+{{SHORTCODES_JSON}}
+```
+
+{{SHORTCODES_LIST}}
+
+For each `wpify_<name>` shortcode:
+
+1. Find the source template at `_includes/**/<name>.html` (try both
+   `framework/shortcodes/<name>.html` and `shortcodes/<name>.html`). Port
+   its Liquid markup to PHP — respect every attribute the source read.
+2. If the source template does not exist, generate a reasonable default:
+   render a `<div class="wpify-shortcode wpify-shortcode--<name>">` that
+   dumps attribute key/value pairs as `data-*` attributes, so nothing is
+   visually missing. Comment the file noting "synthetic — please edit".
+3. Register on `init` so shortcodes resolve before `the_content` runs.
+4. Every shortcode callback must `esc_*` every attribute it echoes.
+
+The goal: a post containing `[wpify_figure src="/x.webp" caption="hi"]`
+must render a real `<figure>` with that image, not the literal bracket
+text.
 
 **Blocks** (`blocks.php` + `blocks/<name>/`):
 

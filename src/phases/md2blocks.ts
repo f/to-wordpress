@@ -59,6 +59,11 @@ function tokenToBlock(tok: Tokens.Generic): string {
       return wrap("separator", `<hr class="wp-block-separator has-alpha-channel-opacity"/>`);
     case "html": {
       const t = tok as Tokens.HTML;
+      const text = t.text.trim();
+      // Pass through content that's ALREADY a Gutenberg block comment so
+      // we don't double-wrap things the normalize step emitted directly
+      // (e.g. shortcode translations: `<!-- wp:image --> … <!-- /wp:image -->`).
+      if (/^<!--\s*wp:/.test(text)) return t.text;
       return wrap("html", t.text);
     }
     case "table": {

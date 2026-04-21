@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { MigrationContext } from "../types.js";
@@ -17,6 +17,16 @@ export async function runPlugin(ctx: MigrationContext, bus: UiBus): Promise<void
 
   const tpl = await loadPrompt("plugin");
   const pluginSlugUnderscored = detected.pluginSlug.replace(/-/g, "_");
+  const shortcodesManifestPath = join(ctx.workDir, "shortcodes.json");
+  let discoveredShortcodes: string[] = [];
+  if (existsSync(shortcodesManifestPath)) {
+    try {
+      const parsed = JSON.parse(await readFile(shortcodesManifestPath, "utf8"));
+      if (Array.isArray(parsed.shortcodes)) discoveredShortcodes = parsed.shortcodes.map(String);
+    } catch {
+      /* ignore */
+    }
+  }
   const prompt = interpolate(tpl, {
     PLUGIN_DIR: ctx.pluginDir,
     PLUGIN_SLUG: detected.pluginSlug,
@@ -25,6 +35,10 @@ export async function runPlugin(ctx: MigrationContext, bus: UiBus): Promise<void
     SITE_TITLE: detected.siteTitle ?? detected.themeSlug,
     DETECTED_JSON: JSON.stringify(detected, null, 2),
     CHOICES_JSON: JSON.stringify(choices, null, 2),
+    SHORTCODES_JSON: JSON.stringify(discoveredShortcodes, null, 2),
+    SHORTCODES_LIST: discoveredShortcodes.length > 0
+      ? discoveredShortcodes.map((n) => `- wpify_${n}`).join("\n")
+      : "(none detected)",
   });
 
   const result = await runCopilotPhase(bus, "plugin", {
@@ -38,6 +52,7 @@ export async function runPlugin(ctx: MigrationContext, bus: UiBus): Promise<void
   if (result.sessionId) ctx.copilotSessionId = result.sessionId;
 
   const mainFile = join(ctx.pluginDir, `${detected.pluginSlug}.php`);
+  const humanName = `${detected.siteTitle ?? detected.themeSlug} Site`;
   if (!existsSync(mainFile)) {
     bus.pushStreamEvent("plugin", {
       type: "warn",
@@ -46,7 +61,7 @@ export async function runPlugin(ctx: MigrationContext, bus: UiBus): Promise<void
     });
     await writeFile(
       mainFile,
-      `<?php\n/**\n * Plugin Name: ${detected.pluginSlug}\n * Description: Site-specific plugin for the migrated site.\n * Version: 0.1.0\n * License: GPL-2.0-or-later\n * Text Domain: ${detected.pluginSlug}\n */\nif (!defined('ABSPATH')) { exit; }\nforeach (glob(plugin_dir_path(__FILE__) . 'includes/*.php') as $__inc) { require_once $__inc; }\n`,
+      `<?php\n/**\n * Plugin Name: ${humanName}\n * Description: Site-specific plugin for ${detected.siteTitle ?? detected.themeSlug} — CPTs, shortcodes, redirects, analytics, and other non-theme features migrated by to-wordpress.\n * Version: 0.1.0\n * License: GPL-2.0-or-later\n * Text Domain: ${detected.pluginSlug}\n */\nif (!defined('ABSPATH')) { exit; }\nforeach (glob(plugin_dir_path(__FILE__) . 'includes/*.php') as $__inc) { require_once $__inc; }\n`,
       "utf8",
     );
   }
@@ -54,6 +69,19 @@ export async function runPlugin(ctx: MigrationContext, bus: UiBus): Promise<void
   const cptFile = join(ctx.pluginDir, "includes", "cpt.php");
   if (choices.customPostTypes.length > 0 && !existsSync(cptFile)) {
     await writeFile(cptFile, buildCptFallback(choices.customPostTypes, detected.pluginSlug), "utf8");
+  }
+
+  // Guarantee every detected shortcode is registered with a PHP callback,
+  // even if Copilot missed one. An unregistered `[wpify_figure ...]` would
+  // otherwise render as literal bracket text in a published post.
+  const shortcodesFile = join(ctx.pluginDir, "includes", "shortcodes.php");
+  if (discoveredShortcodes.length > 0 && !existsSync(shortcodesFile)) {
+    await writeFile(shortcodesFile, buildShortcodesFallback(discoveredShortcodes), "utf8");
+    bus.pushStreamEvent("plugin", {
+      type: "warn",
+      phase: "plugin",
+      message: `shortcodes.php missing — wrote ${discoveredShortcodes.length}-shortcode fallback`,
+    });
   }
 
   if (result.exitCode !== 0) {
@@ -85,4 +113,46 @@ function buildCptFallback(
 
 function php(s: string): string {
   return "'" + s.replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'";
+}
+
+/**
+ * Synthesize a generic PHP file that registers every shortcode the
+ * normalize phase emitted. Each handler renders a semantic wrapper with
+ * all source attributes exposed as `data-*`. Copilot is expected to
+ * overwrite this with proper per-shortcode markup, but the fallback
+ * guarantees the rendered post never leaks raw `[wpify_xyz …]` text.
+ */
+function buildShortcodesFallback(names: string[]): string {
+  const lines: string[] = [
+    "<?php",
+    "// Synthesized by to-wordpress (src/phases/plugin.ts). Replace each",
+    "// handler with the real template from the source site (look in",
+    "// _includes/framework/shortcodes/ or _includes/shortcodes/).",
+    "if ( ! defined( 'ABSPATH' ) ) { exit; }",
+    "",
+    "if ( ! function_exists( 'wpify_shortcode_attrs_to_data' ) ) {",
+    "    function wpify_shortcode_attrs_to_data( $atts ) {",
+    "        $out = '';",
+    "        foreach ( (array) $atts as $k => $v ) {",
+    "            $out .= ' data-' . sanitize_key( $k ) . '=\"' . esc_attr( $v ) . '\"';",
+    "        }",
+    "        return $out;",
+    "    }",
+    "}",
+    "",
+    "add_action( 'init', function () {",
+  ];
+  for (const n of names) {
+    lines.push(
+      `    add_shortcode( 'wpify_${n}', function ( $atts, $content = null ) {`,
+      `        $atts = shortcode_atts( [], (array) $atts, 'wpify_${n}' );`,
+      `        $data = wpify_shortcode_attrs_to_data( $atts );`,
+      `        $label = esc_html( 'wpify_${n}' );`,
+      `        $inner = $content ? wp_kses_post( $content ) : '';`,
+      `        return '<div class="wpify-shortcode wpify-shortcode--${n}"' . $data . '>' . $inner . '</div>';`,
+      `    } );`,
+    );
+  }
+  lines.push("} );", "");
+  return lines.join("\n");
 }

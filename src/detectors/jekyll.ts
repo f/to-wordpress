@@ -68,6 +68,22 @@ export const jekyllDetector: Detector = {
         }
       }
     }
+    // Jekyll `_drafts/` entries should migrate too, just as WordPress drafts.
+    // The collection permalink mirrors `_posts` so the slug normalization
+    // logic works identically; `normalize.ts#deriveStatus` detects the
+    // `_drafts` path and tags each file as a WP draft.
+    if (existsSync(join(dir, "_drafts"))) {
+      const drafts = await listFiles(join(dir, "_drafts"), ".md");
+      if (drafts.length > 0) {
+        const postsColl = declared.posts as { permalink?: string } | undefined;
+        out.collections.push({
+          name: "posts",
+          dir: join(dir, "_drafts"),
+          permalink: postsColl?.permalink ?? "/:path/",
+          count: drafts.length,
+        });
+      }
+    }
     if (existsSync(join(dir, "pages"))) {
       out.pages = await listFiles(join(dir, "pages"), ".md");
     }

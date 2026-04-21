@@ -111,18 +111,25 @@ function parseCopilotLine(line: string): CopilotEvent[] {
   if (sessionId) events.push({ type: "session", sessionId });
 
   // Reasoning summaries come from the model under many event names. Copilot
-  // CLI today emits `assistant.reasoning_delta` / `assistant.reasoning` with
-  // the payload on `data.deltaContent` / `data.content`. We stay permissive
-  // so the TUI's third column keeps working if the wire format shifts.
+  // CLI emits BOTH `assistant.reasoning_delta` (streaming tokens) AND
+  // `assistant.reasoning` (consolidated full text) for the same content —
+  // forwarding both produces a duplicate paragraph in the TUI. Keep the
+  // delta stream (so users see live thinking) and drop the consolidation.
   const lowerKind = kind.toLowerCase();
   if (/reason|think/.test(lowerKind)) {
-    const data = (obj.data ?? {}) as Record<string, unknown>;
+    const isDelta = /delta/.test(lowerKind);
+    const isConsolidation = !isDelta;
+    if (isConsolidation) {
+      // Skip the consolidated event to avoid duplicating its own deltas.
+      return events;
+    }
+    const reasoningData = (obj.data ?? {}) as Record<string, unknown>;
     const text = extractText(
-      data.deltaContent ??
-        data.delta_content ??
-        data.content ??
-        data.text ??
-        data.summary ??
+      reasoningData.deltaContent ??
+        reasoningData.delta_content ??
+        reasoningData.content ??
+        reasoningData.text ??
+        reasoningData.summary ??
         obj.content ??
         obj.text ??
         obj.summary ??
@@ -156,6 +163,13 @@ function parseCopilotLine(line: string): CopilotEvent[] {
     case "message":
     case "assistant_message":
     case "assistant": {
+      // Like reasoning, Copilot emits deltas + a final consolidation. Drop
+      // the consolidation text so we don't print each assistant reply twice.
+      // Tool requests on the consolidated event are already covered by the
+      // separate `tool.execution_*` events.
+      const isDelta = /delta/.test(kind.toLowerCase());
+      const isConsolidation = kind.startsWith("assistant.") && !isDelta;
+      if (isConsolidation) break;
       const role = ((obj.role as string | undefined) ?? (data.role as string | undefined) ?? "assistant") as
         | "assistant"
         | "user"

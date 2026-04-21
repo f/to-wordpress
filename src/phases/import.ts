@@ -269,6 +269,37 @@ function buildImportPhp(): string {
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
+// Wipe WordPress's default sample content before anything else so the
+// migrated site is a clean replica of the source. This only affects the
+// well-known presets (Hello world!, Sample Page, Privacy Policy stub,
+// "Auto Draft", plus the default comment). Anything the user or a
+// previous run created stays put.
+$wpify_preset_slugs = [
+    'hello-world', 'sample-page', 'privacy-policy',
+];
+foreach ( $wpify_preset_slugs as $wpify_slug ) {
+    foreach ( [ 'post', 'page' ] as $wpify_type ) {
+        $wpify_found = get_page_by_path( $wpify_slug, OBJECT, $wpify_type );
+        if ( $wpify_found ) {
+            wp_delete_post( $wpify_found->ID, true );
+        }
+    }
+}
+// Trash any "Auto Draft" residue WP creates on first boot.
+$wpify_autodrafts = get_posts( [
+    'post_status'    => 'auto-draft',
+    'posts_per_page' => -1,
+    'post_type'      => [ 'post', 'page' ],
+    'fields'         => 'ids',
+] );
+foreach ( $wpify_autodrafts as $wpify_adid ) {
+    wp_delete_post( $wpify_adid, true );
+}
+// Remove the default "Mr WordPress" comment if it still points at a
+// now-deleted Hello World.
+global $wpdb;
+$wpdb->query( "DELETE FROM {$wpdb->comments} WHERE comment_author = 'A WordPress Commenter' AND comment_approved IN ('1','0')" );
+
 $manifest_rel = isset( $args[0] ) ? $args[0] : 'wp-content/to-wordpress/import-manifest.json';
 $manifest_path = ABSPATH . ltrim( $manifest_rel, '/' );
 if ( ! file_exists( $manifest_path ) ) {
@@ -497,9 +528,21 @@ if ( ! empty( $manifest['menu_items'] ) && is_array( $manifest['menu_items'] ) )
                 $title = isset( $item['title'] ) ? (string) $item['title'] : '';
                 $url = isset( $item['url'] ) ? (string) $item['url'] : '';
                 if ( ! $title || ! $url ) continue;
+                // Resolve URL smartly: external links (http://…, mailto:…,
+                // tel:…, #anchor, protocol-relative //…) stay verbatim;
+                // site-relative paths get home_url() applied. Without this
+                // guard an external URL gets mangled into
+                // "http://localhost/https://external.example" which breaks
+                // every non-internal menu item.
+                $resolved_url = $url;
+                if ( preg_match( '#^(https?:|mailto:|tel:|sms:|ftp:|#|//)#i', $url ) ) {
+                    $resolved_url = $url;
+                } else {
+                    $resolved_url = home_url( '/' . ltrim( $url, '/' ) );
+                }
                 $new_id = wp_update_nav_menu_item( $menu_id, 0, [
                     'menu-item-title'  => $title,
-                    'menu-item-url'    => home_url( $url ),
+                    'menu-item-url'    => $resolved_url,
                     'menu-item-status' => 'publish',
                     'menu-item-parent-id' => $parent_id,
                 ] );

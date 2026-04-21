@@ -49,12 +49,87 @@ export interface PromptResponse {
   value: string;
 }
 
+type PendingKind = "assistant" | "reasoning";
+
+interface LiveStream {
+  id: number;
+  phase: PhaseId | undefined;
+  kind: PendingKind;
+  text: string;
+  ts: number;
+}
+
+/**
+ * Maximum characters one live entry is allowed to grow before it "wraps"
+ * into a fresh entry. Keeps any single rendered paragraph from becoming
+ * arbitrarily large. 4 KB covers a few hundred words which is plenty of
+ * live context — anything older scrolls off naturally.
+ */
+const LIVE_WRAP_CHARS = 4000;
+
 export class UiBus extends EventEmitter {
   private logId = 0;
+  /**
+   * The currently live stream entry (if any). While a stream is active
+   * the same LogEntry is re-emitted on every delta; the TUI replaces the
+   * entry with the same id in-place so users see one continuously
+   * growing line instead of a ladder of one-word rows.
+   */
+  private live: LiveStream | null = null;
   autoAnswer = false;
 
   pushStreamEvent(phase: PhaseId | undefined, ev: StreamEvent): void {
     this.emit("stream", phase, ev);
+
+    // Copilot streams `message` and `reasoning` in sub-word deltas. Emit
+    // them as updates to a single "live" LogEntry rather than separate
+    // rows — that's the only way to avoid the ragged
+    // "The / mirrored / theme / already / has" one-word ladder.
+    if (ev.type === "message" || ev.type === "reasoning") {
+      const text = ev.text ?? "";
+      if (!text) return;
+      const kind: PendingKind = ev.type === "message" ? "assistant" : "reasoning";
+
+      const sameStream =
+        this.live !== null &&
+        this.live.kind === kind &&
+        this.live.phase === phase;
+
+      if (!sameStream) {
+        // Finalize the previous live stream (just drop the reference —
+        // it's already been emitted; nothing more to do) and begin a new
+        // one with a fresh id.
+        this.live = {
+          id: ++this.logId,
+          phase,
+          kind,
+          text: "",
+          ts: Date.now(),
+        };
+      }
+
+      // Append delta. If the live entry grows past the wrap limit, start
+      // a new one so pane rendering stays cheap.
+      this.live!.text += text;
+      if (this.live!.text.length > LIVE_WRAP_CHARS) {
+        this.emitLive();
+        this.live = {
+          id: ++this.logId,
+          phase,
+          kind,
+          text: "",
+          ts: Date.now(),
+        };
+      } else {
+        this.emitLive();
+      }
+      return;
+    }
+
+    // Any non-stream event finalizes the live stream so subsequent
+    // events (tool calls, info lines, phase changes) sit below it.
+    this.live = null;
+
     const entry = this.streamToLog(phase, ev);
     if (entry) this.emit("log", entry);
     if (ev.type === "phase_start") this.emit("phase", phase, "running", ev.message);
@@ -62,19 +137,37 @@ export class UiBus extends EventEmitter {
     if (ev.type === "phase_fail") this.emit("phase", phase, "fail", ev.message);
   }
 
+  private emitLive(): void {
+    const p = this.live;
+    if (!p) return;
+    // Normalize whitespace for display: collapse runs of spaces/tabs,
+    // compress 3+ newlines to paragraph breaks, and strip horizontal
+    // whitespace around newlines. Do NOT trim the ends — the TUI wraps
+    // & tails, and trimming would jitter the rendered viewport every
+    // tick. `text.trim()` is only used to detect an "empty so far" case.
+    const display = p.text
+      .replace(/[ \t]+/g, " ")
+      .replace(/\n{3,}/g, "\n\n")
+      .replace(/[ \t]*\n[ \t]*/g, "\n");
+    if (!display.trim()) return;
+    this.emit("log", {
+      id: p.id,
+      ts: p.ts,
+      phase: p.phase,
+      kind: p.kind,
+      text: display,
+    } satisfies LogEntry);
+  }
+
   private streamToLog(phase: PhaseId | undefined, ev: StreamEvent): LogEntry | undefined {
     const base = { id: ++this.logId, ts: Date.now(), phase };
     switch (ev.type) {
-      case "message": {
-        const txt = ev.text?.trim();
-        if (!txt) return undefined;
-        return { ...base, kind: "assistant", text: txt };
-      }
-      case "reasoning": {
-        const txt = ev.text?.trim();
-        if (!txt) return undefined;
-        return { ...base, kind: "reasoning", text: txt };
-      }
+      // `message` and `reasoning` are coalesced in pushStreamEvent and never
+      // reach this switch. We list them here only to keep the discriminated
+      // union exhaustive for TypeScript.
+      case "message":
+      case "reasoning":
+        return undefined;
       case "tool_use":
         return { ...base, kind: "tool", text: describeTool(ev.name, ev.input) };
       case "tool_result":

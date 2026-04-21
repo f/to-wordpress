@@ -126,6 +126,13 @@ export interface MigrationContext {
   copilotSessionId?: string;
   wpUrl?: string;
   flags: MigrationFlags;
+  /**
+   * Set of unknown Liquid shortcode names ({@link normalize.ts}) encountered
+   * during normalization. The plugin phase reads this to generate matching
+   * WordPress shortcode handlers so no raw Liquid survives in the imported
+   * content.
+   */
+  shortcodes?: Set<string>;
 }
 
 export type CopilotEvent =

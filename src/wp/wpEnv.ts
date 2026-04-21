@@ -78,7 +78,38 @@ export function wpEnvStop(opts: WpEnvRunOptions): Promise<number> {
 }
 
 export function wpEnvDestroy(opts: WpEnvRunOptions): Promise<number> {
-  return runWpEnv(["destroy", "--scripts=false"], opts);
+  // `wp-env destroy` prompts for confirmation. Piping "y\n" several times
+  // satisfies any "are you sure" / "truly sure" chain without a TTY.
+  return runWpEnvWithInput(["destroy", "--scripts=false"], opts, "y\ny\ny\n");
+}
+
+export function wpEnvClean(
+  opts: WpEnvRunOptions,
+  environment: "development" | "tests" | "all" = "all",
+): Promise<number> {
+  return runWpEnv(["clean", environment], opts);
+}
+
+async function runWpEnvWithInput(
+  args: string[],
+  opts: WpEnvRunOptions,
+  input: string,
+): Promise<number> {
+  const child = execa("npx", ["--yes", "@wordpress/env", ...args], {
+    cwd: opts.cwd,
+    reject: false,
+    buffer: false,
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+    input,
+    timeout: opts.timeoutMs ?? 10 * 60 * 1000,
+    env: { ...process.env, FORCE_COLOR: "0" },
+  });
+  if (child.stdout) pumpToLines(child.stdout, (l) => opts.onLine?.(l, "stdout"));
+  if (child.stderr) pumpToLines(child.stderr, (l) => opts.onLine?.(l, "stderr"));
+  const res = await child;
+  return res.exitCode ?? 0;
 }
 
 export interface WpCliOptions extends WpEnvRunOptions {

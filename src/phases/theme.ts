@@ -29,6 +29,17 @@ export async function runTheme(ctx: MigrationContext, bus: UiBus): Promise<void>
   const renderedSection = await buildRenderedReference(prerender);
 
   const tpl = await loadPrompt("theme");
+  const pages = ctx.choices?.pages ?? [];
+  const pagesTable = pages.length
+    ? [
+        "| slug | title | permalink | source layout | role | required template |",
+        "|---|---|---|---|---|---|",
+        ...pages.map((p) => {
+          const file = p.layout ? `page-${p.layout}.php` : "page.php";
+          return `| \`${p.slug}\` | ${p.title} | ${p.permalink ?? "-"} | ${p.layout ?? "-"} | ${p.role ?? "-"} | \`${file}\` |`;
+        }),
+      ].join("\n")
+    : "_No standalone pages detected._";
   const prompt = interpolate(tpl, {
     SOURCE_DIR: ctx.sourceDir,
     THEME_DIR: ctx.themeDir,
@@ -36,6 +47,10 @@ export async function runTheme(ctx: MigrationContext, bus: UiBus): Promise<void>
     SITE_TITLE: detected.siteTitle ?? detected.themeSlug,
     LAYOUTS_LIST: detected.layouts.join("\n"),
     DETECTED_JSON: JSON.stringify(detected, null, 2),
+    PAGES_TABLE: pagesTable,
+    FRONT_PAGE_SLUG: ctx.choices?.frontPageSlug ?? "(none)",
+    BLOG_INDEX_PAGE_SLUG: ctx.choices?.blogIndexPageSlug ?? "(none)",
+    PRIVACY_PAGE_SLUG: ctx.choices?.privacyPageSlug ?? "(none)",
     RENDERED_REFERENCE: renderedSection,
     RENDERED_DIR: prerender.renderedDir ?? "(prerender unavailable)",
     MIRRORED_SOURCE: buildMirroredSummary(ctx, detected),

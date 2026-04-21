@@ -36,6 +36,36 @@ Detected context (JSON):
 {{DETECTED_JSON}}
 ```
 
+## Standalone pages (one template per source layout)
+
+{{PAGES_TABLE}}
+
+- Front page slug: `{{FRONT_PAGE_SLUG}}` → WordPress renders this at `/` via `front-page.php` (MUST exist and reproduce the source hero exactly).
+- Blog index page slug: `{{BLOG_INDEX_PAGE_SLUG}}` → WordPress renders this at whatever URL the page lives at, using `home.php` for the posts loop.
+- Privacy policy page slug: `{{PRIVACY_PAGE_SLUG}}` → regular `page.php` or `page-basic.php` if present.
+
+For **every distinct source layout** listed in the table above, create
+`page-<layout>.php` (or `page-templates/<layout>.php`) in the theme root.
+Each file MUST declare a `Template Name` header so the WordPress editor
+lists it:
+
+```php
+<?php
+/**
+ * Template Name: <Layout Name>
+ * Template Post Type: page
+ */
+get_header(); ?>
+…
+<?php get_footer();
+```
+
+The Import phase reads each page's source `layout` and sets
+`_wp_page_template` to the matching file. Missing a template → the page
+silently falls back to `page.php` and loses fidelity. A page whose
+layout is `categories` MUST have a `page-categories.php` that renders
+the site's category index exactly as the source did.
+
 ## Required output (every file must exist and be non-empty)
 
 ### Top-level

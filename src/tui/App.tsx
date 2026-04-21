@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useInput, useStdin } from "ink";
 import Spinner from "ink-spinner";
 import SelectInput from "ink-select-input";
@@ -25,7 +25,8 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
     for (const id of phaseOrder) init[id] = { id, status: "pending" };
     return init as Record<PhaseId, PhaseRowState>;
   });
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const logsRef = useRef<LogEntry[]>([]);
+  const [logsRev, setLogsRev] = useState(0);
   const [prompt, setPrompt] = useState<PromptRequest | null>(null);
   const [textValue, setTextValue] = useState("");
   const [showRaw, setShowRaw] = useState(false);
@@ -51,11 +52,19 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
   }, [doneExit]);
 
   useEffect(() => {
+    let flushTimer: NodeJS.Timeout | null = null;
+    const scheduleFlush = () => {
+      if (flushTimer) return;
+      flushTimer = setTimeout(() => {
+        flushTimer = null;
+        setLogsRev((r) => r + 1);
+      }, 60);
+    };
     const onLog = (entry: LogEntry) => {
-      setLogs((prev) => {
-        const next = [...prev, entry];
-        return next.length > 500 ? next.slice(next.length - 500) : next;
-      });
+      const buf = logsRef.current;
+      buf.push(entry);
+      if (buf.length > 500) buf.splice(0, buf.length - 500);
+      scheduleFlush();
     };
     const onPhase = (id: PhaseId, status: PhaseStatus, message?: string) => {
       setPhases((prev) => ({ ...prev, [id]: { id, status, message } }));
@@ -74,15 +83,18 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
       bus.off("phase", onPhase);
       bus.off("prompt:request", onPrompt);
       bus.off("done", onDone);
+      if (flushTimer) clearTimeout(flushTimer);
     };
   }, [bus]);
 
   const visibleLogs = useMemo(
-    () => (showRaw ? logs : logs.filter((l) => l.kind !== "raw")).slice(-40),
-    [logs, showRaw],
+    () => (showRaw ? logsRef.current : logsRef.current.filter((l) => l.kind !== "raw")).slice(-40),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [showRaw, logsRev],
   );
 
-  const lastActivityAt = logs.length > 0 ? logs[logs.length - 1].ts : undefined;
+  const lastActivityAt =
+    logsRef.current.length > 0 ? logsRef.current[logsRef.current.length - 1].ts : undefined;
   const runningPhaseId = (Object.values(phases).find((p) => p.status === "running") as PhaseRowState | undefined)?.id;
   const idleSeconds = lastActivityAt ? Math.max(0, Math.floor((now - lastActivityAt) / 1000)) : 0;
   const showThinking = doneExit === null && runningPhaseId && idleSeconds >= 3;

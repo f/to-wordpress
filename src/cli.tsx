@@ -1,10 +1,11 @@
 import React from "react";
 import { render } from "ink";
 import { Command } from "commander";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { App } from "./tui/App.js";
-import { UiBus } from "./tui/bus.js";
+import { UiBus, PHASE_TITLES } from "./tui/bus.js";
 import { attachHeadlessLogger } from "./tui/headless.js";
 import type { MigrationContext, PhaseId } from "./types.js";
 import { runDetect } from "./phases/detect.js";
@@ -16,11 +17,17 @@ import { runNormalize } from "./phases/normalize.js";
 import { runImport } from "./phases/import.js";
 import { runVerify } from "./phases/verify.js";
 import { runFixLoop } from "./phases/fix.js";
-import { applyContextToDoc, loadMigrationDoc, markPhase, saveMigrationDoc } from "./state/migration.js";
-import { readFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import {
+  applyContextToDoc,
+  loadMigrationDoc,
+  markPhase,
+  saveMigrationDoc,
+  type MigrationDoc,
+} from "./state/migration.js";
+import { runFresh } from "./phases/fresh.js";
+import { commitPhase, setupGit } from "./phases/git.js";
 
-const PACKAGE_VERSION = "0.1.1";
+const PACKAGE_VERSION = "0.1.2";
 
 interface CliOptions {
   skipBoot?: boolean;
@@ -30,6 +37,9 @@ interface CliOptions {
   until?: PhaseId;
   maxFixIterations?: number;
   yes?: boolean;
+  fresh?: boolean;
+  branch?: string;
+  git?: boolean;
 }
 
 const PHASE_ORDER: PhaseId[] = [
@@ -51,6 +61,9 @@ async function main(): Promise<void> {
     .description("Migrate any codebase to WordPress. Hybrid orchestration with GitHub Copilot CLI.")
     .version(PACKAGE_VERSION, "-v, --version", "print version")
     .argument("[source]", "path to the source site to migrate", ".")
+    .option("--fresh", "tear down previous wp-env containers + volumes and wipe WORDPRESS_MIGRATION/ before starting")
+    .option("--branch <name>", "git branch to create and commit migration work on", "to-wordpress")
+    .option("--no-git", "disable automatic git init / branching / per-phase commits")
     .option("--skip-boot", "skip wp-env start (assumes already running)")
     .option("--skip-copilot", "use deterministic fallbacks only, don't invoke copilot")
     .option("-y, --yes", "auto-answer all user prompts with defaults (non-interactive)")
@@ -78,6 +91,7 @@ async function main(): Promise<void> {
       skipBoot: Boolean(opts.skipBoot),
       skipCopilot: Boolean(opts.skipCopilot),
       yes: Boolean(opts.yes),
+      fresh: Boolean(opts.fresh),
     },
   };
 
@@ -116,79 +130,73 @@ async function main(): Promise<void> {
     return true;
   };
 
+  if (opts.fresh && (opts.from || opts.only)) {
+    bus.pushStreamEvent(undefined, {
+      type: "error",
+      message: "--fresh cannot be combined with --from or --only (fresh wipes state that those flags depend on)",
+    });
+    bus.emit("done", 2);
+    if (headless) {
+      detachHeadless?.();
+      process.exit(2);
+    }
+    return;
+  }
+
+  const gitEnabled = opts.git !== false;
+
   let exitCode = 0;
   try {
+    if (opts.fresh) {
+      await runFresh(ctx, bus);
+    }
+
+    if (gitEnabled) {
+      await setupGit(ctx, bus, opts.branch ?? "to-wordpress");
+    }
+
     const doc = await loadMigrationDoc(ctx.planPath, ctx.sourceDir);
     if (doc.detected) ctx.detected = doc.detected;
     if (doc.choices) ctx.choices = doc.choices;
     if (doc.copilotSessionId) ctx.copilotSessionId = doc.copilotSessionId;
     await hydrateWpUrl(ctx);
 
-    if (filter("detect")) {
-      markPhase(doc, "detect", "running");
+    const step = async <T,>(
+      phase: PhaseId,
+      condition: boolean,
+      run: () => Promise<T>,
+    ): Promise<T | undefined> => {
+      if (!condition || !filter(phase)) return undefined;
+      return runPhaseStep(ctx, bus, doc, phase, gitEnabled, run);
+    };
+
+    await step("detect", true, async () => {
       ctx.detected = await runDetect(ctx, bus);
-      markPhase(doc, "detect", "ok");
-      await saveAndApply(ctx, doc, "after detect");
-    }
-
-    if (filter("plan")) {
-      markPhase(doc, "plan", "running");
+    });
+    await step("plan", true, async () => {
       ctx.choices = await runPlan(ctx, bus);
-      markPhase(doc, "plan", "ok");
-      await saveAndApply(ctx, doc, "after plan");
-    }
-
-    if (filter("boot") && !opts.skipBoot) {
-      markPhase(doc, "boot", "running");
+    });
+    await step("boot", !opts.skipBoot, async () => {
       await runBoot(ctx, bus);
-      markPhase(doc, "boot", "ok");
-      await saveAndApply(ctx, doc, "after boot");
-    }
-
-    if (filter("theme") && !opts.skipCopilot) {
-      markPhase(doc, "theme", "running");
+    });
+    await step("theme", !opts.skipCopilot, async () => {
       await runTheme(ctx, bus);
-      markPhase(doc, "theme", "ok");
-      await saveAndApply(ctx, doc, "after theme");
-    }
-
-    if (filter("plugin") && !opts.skipCopilot) {
-      markPhase(doc, "plugin", "running");
+    });
+    await step("plugin", !opts.skipCopilot, async () => {
       await runPlugin(ctx, bus);
-      markPhase(doc, "plugin", "ok");
-      await saveAndApply(ctx, doc, "after plugin");
-    }
-
-    if (filter("normalize")) {
-      markPhase(doc, "normalize", "running");
+    });
+    await step("normalize", true, async () => {
       await runNormalize(ctx, bus);
-      markPhase(doc, "normalize", "ok");
-      await saveAndApply(ctx, doc, "after normalize");
-    }
-
-    if (filter("import")) {
-      markPhase(doc, "import", "running");
+    });
+    await step("import", true, async () => {
       await runImport(ctx, bus);
-      markPhase(doc, "import", "ok");
-      await saveAndApply(ctx, doc, "after import");
-    }
-
-    let report;
-    if (filter("verify")) {
-      markPhase(doc, "verify", "running");
-      report = await runVerify(ctx, bus);
-      markPhase(doc, "verify", report.ok ? "ok" : "fail");
-      await saveAndApply(ctx, doc, "after verify");
-    }
-
-    if (report && !report.ok && filter("fix") && !opts.skipCopilot) {
-      markPhase(doc, "fix", "running");
-      const final = await runFixLoop(ctx, bus, report, {
-        maxIterations: opts.maxFixIterations,
-      });
-      markPhase(doc, "fix", final.ok ? "ok" : "fail");
-      await saveAndApply(ctx, doc, "after fix");
-      if (!final.ok) exitCode = 2;
+    });
+    const report = await step("verify", true, async () => runVerify(ctx, bus));
+    if (report && !report.ok && !opts.skipCopilot) {
+      const final = await step("fix", true, async () =>
+        runFixLoop(ctx, bus, report, { maxIterations: opts.maxFixIterations }),
+      );
+      if (final && !final.ok) exitCode = 2;
     }
   } catch (err) {
     bus.pushStreamEvent(undefined, { type: "error", message: (err as Error).message });
@@ -200,6 +208,77 @@ async function main(): Promise<void> {
     detachHeadless?.();
     process.exit(exitCode);
   }
+}
+
+/**
+ * Run a single phase with retry/skip/abort support. On failure, the user is
+ * prompted to retry (re-run the phase), skip (mark as failed and continue),
+ * or abort (throw). Under `--yes` a failure aborts immediately.
+ *
+ * On success (or skip) we stage + commit whatever the phase wrote to the
+ * source tree under the `to-wordpress` branch so each phase is a standalone
+ * checkpoint you can `git diff` against the previous one.
+ */
+async function runPhaseStep<T>(
+  ctx: MigrationContext,
+  bus: UiBus,
+  doc: MigrationDoc,
+  phase: PhaseId,
+  gitEnabled: boolean,
+  run: () => Promise<T>,
+): Promise<T | undefined> {
+  let attempt = 0;
+  while (true) {
+    attempt++;
+    try {
+      markPhase(doc, phase, "running");
+      await saveAndApply(ctx, doc, `started ${phase}`);
+      const result = await run();
+      markPhase(doc, phase, "ok");
+      await saveAndApply(ctx, doc, `finished ${phase}`);
+      if (gitEnabled) await commitPhase(ctx, phase, bus, { active: true });
+      return result;
+    } catch (err) {
+      const msg = (err as Error).message ?? String(err);
+      bus.pushStreamEvent(undefined, {
+        type: "error",
+        message: `${PHASE_TITLES[phase]} failed (attempt ${attempt}): ${msg}`,
+      });
+      markPhase(doc, phase, "fail", msg);
+      await saveAndApply(ctx, doc, `failed ${phase}`);
+
+      if (ctx.flags.yes) throw err;
+
+      const ans = await bus.askPrompt({
+        id: `phase-fail-${phase}-${attempt}`,
+        title: `${PHASE_TITLES[phase]} failed`,
+        kind: "select",
+        message: `Attempt ${attempt} error: ${truncate(msg, 200)}. What do you want to do?`,
+        options: [
+          { label: "Retry this phase", value: "retry" },
+          { label: "Skip and continue", value: "skip" },
+          { label: "Abort migration", value: "abort" },
+        ],
+        default: "retry",
+      });
+      if (ans === "retry") {
+        bus.pushStreamEvent(undefined, { type: "info", phase, message: `retrying ${phase}…` });
+        continue;
+      }
+      if (ans === "skip") {
+        markPhase(doc, phase, "skipped", `user skipped after ${attempt} attempt${attempt === 1 ? "" : "s"}`);
+        await saveAndApply(ctx, doc, `skipped ${phase}`);
+        if (gitEnabled) await commitPhase(ctx, `${phase} (skipped)`, bus, { active: true });
+        return undefined;
+      }
+      throw err;
+    }
+  }
+}
+
+function truncate(s: string, n: number): string {
+  const flat = s.replace(/\s+/g, " ").trim();
+  return flat.length > n ? flat.slice(0, n) + "…" : flat;
 }
 
 async function hydrateWpUrl(ctx: MigrationContext): Promise<void> {
@@ -215,7 +294,7 @@ async function hydrateWpUrl(ctx: MigrationContext): Promise<void> {
 
 async function saveAndApply(
   ctx: MigrationContext,
-  doc: Awaited<ReturnType<typeof loadMigrationDoc>>,
+  doc: MigrationDoc,
   note: string,
 ): Promise<void> {
   applyContextToDoc(doc, ctx);

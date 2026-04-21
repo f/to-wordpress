@@ -1,4 +1,4 @@
-import type { MigrationContext, UserChoices } from "../types.js";
+import type { MigrationContext, PageSummary, UserChoices } from "../types.js";
 import { runCopilot } from "../copilot/run.js";
 import { interpolate, loadPrompt } from "../prompts/index.js";
 import {
@@ -8,6 +8,7 @@ import {
   saveMigrationDoc,
 } from "../state/migration.js";
 import type { UiBus } from "../tui/bus.js";
+import { analyzePages } from "./pages.js";
 
 export async function runPlan(ctx: MigrationContext, bus: UiBus): Promise<UserChoices> {
   bus.pushStreamEvent("plan", { type: "phase_start", phase: "plan", message: "asking URL-formatting questions" });
@@ -59,15 +60,83 @@ export async function runPlan(ctx: MigrationContext, bus: UiBus): Promise<UserCh
     default: "yes",
   });
 
+  // Inspect every static page and classify its role (front / blog-index /
+  // privacy / terms / contact / archive) so Import can wire the right
+  // WordPress options (show_on_front, page_for_posts, privacy policy).
+  const pages = await analyzePages(detected);
+  const frontPage = pages.find((p) => p.role === "front");
+  const blogIndexPage = pages.find((p) => p.role === "blog-index");
+  const privacyPage = pages.find((p) => p.role === "privacy");
+
+  if (pages.length > 0) {
+    bus.pushStreamEvent("plan", {
+      type: "info",
+      phase: "plan",
+      message: `pages: ${pages.length} detected — ${pages.map((p) => `${p.slug}${p.role && p.role !== "none" ? "(" + p.role + ")" : ""}`).join(", ")}`,
+    });
+  }
+
+  let blogIndexSlug = blogIndexPage?.slug;
+  if (pages.length > 0 && !blogIndexSlug) {
+    const options = [
+      { label: "No dedicated blog page (posts live at /)", value: "__none__" },
+      ...pages.map((p) => ({
+        label: `${p.slug}${p.permalink ? "  (" + p.permalink + ")" : ""}`,
+        value: p.slug,
+      })),
+    ];
+    const ans = await bus.askPrompt({
+      id: "plan.blogIndex",
+      title: "Blog index page",
+      kind: "select",
+      message:
+        "Which page should list your blog posts (page_for_posts)? Auto-detect found none with a /blog/ permalink.",
+      options,
+      default: options[0].value,
+    });
+    blogIndexSlug = ans === "__none__" ? undefined : ans;
+  }
+
+  let privacySlug = privacyPage?.slug;
+  if (pages.length > 0 && !privacySlug) {
+    const options = [
+      { label: "No privacy policy page", value: "__none__" },
+      ...pages.map((p) => ({
+        label: `${p.slug}${p.permalink ? "  (" + p.permalink + ")" : ""}`,
+        value: p.slug,
+      })),
+    ];
+    const ans = await bus.askPrompt({
+      id: "plan.privacy",
+      title: "Privacy policy page",
+      kind: "select",
+      message:
+        "Which page is your privacy policy (wp_page_for_privacy_policy)? Auto-detect found none whose slug contains 'privacy'.",
+      options,
+      default: options[0].value,
+    });
+    privacySlug = ans === "__none__" ? undefined : ans;
+  }
+
   const choices: UserChoices = {
     keepPermalinks: keep === "keep",
     customPostTypes: cpts,
     createRedirects: redirects === "yes",
+    frontPageSlug: frontPage?.slug,
+    blogIndexPageSlug: blogIndexSlug,
+    privacyPageSlug: privacySlug,
+    pages,
     adminUser: "admin",
     adminPassword: "password",
     adminEmail: "admin@example.com",
   };
   ctx.choices = choices;
+
+  bus.pushStreamEvent("plan", {
+    type: "info",
+    phase: "plan",
+    message: `page wiring: front=${choices.frontPageSlug ?? "-"} blog=${choices.blogIndexPageSlug ?? "-"} privacy=${choices.privacyPageSlug ?? "-"}`,
+  });
 
   bus.pushStreamEvent("plan", { type: "info", phase: "plan", message: "writing initial WORDPRESS_MIGRATION.md" });
   const doc = await loadMigrationDoc(ctx.planPath, ctx.sourceDir);
@@ -81,6 +150,10 @@ export async function runPlan(ctx: MigrationContext, bus: UiBus): Promise<UserCh
     {
       heading: "Detected context (summary)",
       body: summarizeDetected(detected),
+    },
+    {
+      heading: "Static pages",
+      body: summarizePages(pages),
     },
     {
       heading: "User choices",
@@ -144,6 +217,10 @@ export async function runPlan(ctx: MigrationContext, bus: UiBus): Promise<UserCh
       body: summarizeDetected(detected),
     },
     {
+      heading: "Static pages",
+      body: summarizePages(pages),
+    },
+    {
       heading: "User choices",
       body: "```json\n" + JSON.stringify(choices, null, 2) + "\n```",
     },
@@ -169,6 +246,21 @@ function singular(name: string): string {
   if (name.endsWith("ies")) return name.slice(0, -3) + "y";
   if (name.endsWith("s")) return name.slice(0, -1);
   return name;
+}
+
+function summarizePages(pages: PageSummary[]): string {
+  if (pages.length === 0) return "_No standalone pages detected._";
+  const rows = pages
+    .map(
+      (p) =>
+        `| \`${p.slug}\` | ${p.title} | ${p.permalink ?? "-"} | ${p.layout ?? "-"} | ${p.role ?? "-"} |`,
+    )
+    .join("\n");
+  return [
+    "| slug | title | permalink | layout | role |",
+    "|---|---|---|---|---|",
+    rows,
+  ].join("\n");
 }
 
 function summarizeDetected(d: {

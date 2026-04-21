@@ -79,6 +79,15 @@ export interface DetectedContext {
   };
 }
 
+export interface PageSummary {
+  sourcePath: string;
+  slug: string;
+  title: string;
+  permalink?: string;
+  layout?: string;
+  role?: "front" | "blog-index" | "privacy" | "terms" | "contact" | "archive" | "none";
+}
+
 export interface UserChoices {
   keepPermalinks: boolean;
   customPostTypes: Array<{
@@ -87,6 +96,10 @@ export interface UserChoices {
     pathPrefix: string;
   }>;
   createRedirects: boolean;
+  frontPageSlug?: string;
+  blogIndexPageSlug?: string;
+  privacyPageSlug?: string;
+  pages?: PageSummary[];
   adminUser: string;
   adminPassword: string;
   adminEmail: string;
@@ -96,6 +109,7 @@ export interface MigrationFlags {
   skipCopilot?: boolean;
   skipBoot?: boolean;
   yes?: boolean;
+  fresh?: boolean;
 }
 
 export interface MigrationContext {

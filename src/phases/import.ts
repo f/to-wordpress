@@ -22,6 +22,7 @@ interface ImportEntry {
   categories: string[];
   tags: string[];
   featured_image_rel?: string;
+  layout?: string;
   meta: Record<string, string>;
 }
 
@@ -46,6 +47,7 @@ export async function runImport(ctx: MigrationContext, bus: UiBus): Promise<void
     const content = markdownToBlocks(parsed.content);
     const rawTitle = String(parsed.data.title ?? it.slug);
     const featuredRel = (parsed.data.featured_image ?? parsed.data.image ?? parsed.data.thumbnail) as string | undefined;
+    const layout = (parsed.data.layout as string | undefined) ?? undefined;
     entries.push({
       post_type: (parsed.data.post_type as string | undefined) ?? it.postType,
       title: rawTitle,
@@ -59,15 +61,19 @@ export async function runImport(ctx: MigrationContext, bus: UiBus): Promise<void
       categories: toStringArray(parsed.data.categories),
       tags: toStringArray(parsed.data.tags),
       featured_image_rel: featuredRel,
+      layout,
       meta: {
         _wpify_original_permalink: String(parsed.data.original_permalink ?? ""),
         _wpify_source_path: String(parsed.data.source_path ?? ""),
         _wpify_title_html: rawTitle,
+        ...(layout ? { _wpify_layout: layout } : {}),
       },
     });
   }
 
-  const frontPageSlug = findFrontPageSlug(index.items);
+  const frontPageSlug = choices.frontPageSlug ?? findFrontPageSlug(index.items);
+  const blogIndexPageSlug = choices.blogIndexPageSlug;
+  const privacyPageSlug = choices.privacyPageSlug;
   const menuItems = await loadSourceMenu(ctx);
 
   const mediaFiles = existsSync(ctx.mediaDir)
@@ -88,6 +94,8 @@ export async function runImport(ctx: MigrationContext, bus: UiBus): Promise<void
       basename: basename(f),
     })),
     front_page_slug: frontPageSlug,
+    blog_index_page_slug: blogIndexPageSlug,
+    privacy_page_slug: privacyPageSlug,
     menu_items: menuItems,
     items: entries,
   };
@@ -422,13 +430,50 @@ foreach ( $manifest['items'] as $item ) {
     }
 }
 
-// Configure the front page from the page with original_permalink = "/".
+// Configure the front page, blog index, and privacy policy from the manifest.
 if ( ! empty( $manifest['front_page_slug'] ) ) {
     $home = get_page_by_path( sanitize_title( $manifest['front_page_slug'] ), OBJECT, 'page' );
     if ( $home ) {
         update_option( 'show_on_front', 'page' );
         update_option( 'page_on_front', (int) $home->ID );
         WP_CLI::log( 'front page set to: ' . $home->post_title . ' (#' . $home->ID . ')' );
+    }
+}
+
+if ( ! empty( $manifest['blog_index_page_slug'] ) ) {
+    $blog = get_page_by_path( sanitize_title( $manifest['blog_index_page_slug'] ), OBJECT, 'page' );
+    if ( $blog ) {
+        update_option( 'page_for_posts', (int) $blog->ID );
+        WP_CLI::log( 'blog index set to: ' . $blog->post_title . ' (#' . $blog->ID . ')' );
+    }
+} elseif ( empty( $manifest['front_page_slug'] ) ) {
+    update_option( 'page_for_posts', 0 );
+}
+
+if ( ! empty( $manifest['privacy_page_slug'] ) ) {
+    $priv = get_page_by_path( sanitize_title( $manifest['privacy_page_slug'] ), OBJECT, 'page' );
+    if ( $priv ) {
+        update_option( 'wp_page_for_privacy_policy', (int) $priv->ID );
+        WP_CLI::log( 'privacy policy set to: ' . $priv->post_title . ' (#' . $priv->ID . ')' );
+    }
+}
+
+// For every page with a known source layout, point its _wp_page_template meta
+// at the matching theme file so WordPress uses the custom template.
+foreach ( $manifest['items'] as $it ) {
+    if ( empty( $it['layout'] ) || ( $it['post_type'] ?? '' ) !== 'page' ) { continue; }
+    $slug = sanitize_title( $it['slug'] );
+    $page = get_page_by_path( $slug, OBJECT, 'page' );
+    if ( ! $page ) { continue; }
+    $layout = sanitize_title( $it['layout'] );
+    $candidates = [ 'page-' . $layout . '.php', 'page-templates/' . $layout . '.php', 'template-' . $layout . '.php' ];
+    $theme_dir = get_stylesheet_directory();
+    $chosen = 'default';
+    foreach ( $candidates as $c ) {
+        if ( file_exists( $theme_dir . '/' . $c ) ) { $chosen = $c; break; }
+    }
+    if ( $chosen !== 'default' ) {
+        update_post_meta( $page->ID, '_wp_page_template', $chosen );
     }
 }
 

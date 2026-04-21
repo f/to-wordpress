@@ -132,8 +132,7 @@ async function normalizeOne(
   for (const c of copied) mediaCopied.add(c);
   body = body2;
 
-  const frontmatterImageKeys = ["featured_image", "image", "thumbnail", "meta_image"];
-  for (const key of frontmatterImageKeys) {
+  for (const key of ["featured_image", "image", "thumbnail", "meta_image"] as const) {
     const ref = parsed.data[key];
     if (typeof ref === "string" && ref.length > 0) {
       const copiedPath = await copyMediaRef(ref, srcPath, detected, ctx);
@@ -141,6 +140,8 @@ async function normalizeOne(
     }
   }
 
+  const layout = (parsed.data.layout as string | undefined) ?? undefined;
+  const description = (parsed.data.description as string | undefined) ?? undefined;
   const normalized = {
     title,
     slug,
@@ -148,13 +149,14 @@ async function normalizeOne(
     updated: (parsed.data.updated as string | undefined) ?? undefined,
     author: (parsed.data.author as string | undefined) ?? undefined,
     status: (parsed.data.published === false ? "draft" : "publish") as "publish" | "draft",
-    excerpt: (parsed.data.excerpt as string | undefined) ?? undefined,
+    excerpt: (parsed.data.excerpt as string | undefined) ?? description,
     categories,
     tags,
     featured_image: featured,
     post_type: postType,
     original_permalink: originalPermalink,
     source_path: resolve(srcPath),
+    layout,
   };
 
   const targetDir = join(ctx.contentDir, postType);

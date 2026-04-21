@@ -13,6 +13,20 @@ export interface MigrationDoc {
   choices?: UserChoices;
   phases: Record<PhaseId, { status: string; startedAt?: string; finishedAt?: string; notes?: string }>;
   notes: string[];
+  sections?: Array<{ heading: string; body: string }>;
+}
+
+/**
+ * Append or update a human-readable section in the migration doc. Sections
+ * are matched by heading (case-insensitive); setting the same heading twice
+ * replaces the previous body instead of duplicating it. Persisted between
+ * runs because the state block is read back on the next invocation.
+ */
+export function setSection(doc: MigrationDoc, heading: string, body: string): void {
+  if (!doc.sections) doc.sections = [];
+  const idx = doc.sections.findIndex((s) => s.heading.toLowerCase() === heading.toLowerCase());
+  if (idx >= 0) doc.sections[idx] = { heading, body };
+  else doc.sections.push({ heading, body });
 }
 
 const MARKER_START = "<!-- WPIFY:STATE:START";
@@ -58,10 +72,11 @@ export async function loadMigrationDoc(path: string, sourceDir: string): Promise
 export async function saveMigrationDoc(
   path: string,
   doc: MigrationDoc,
-  humanSections: Array<{ heading: string; body: string }>,
+  extraSections: Array<{ heading: string; body: string }> = [],
 ): Promise<void> {
   doc.updatedAt = new Date().toISOString();
-  const body = renderMarkdown(doc, humanSections);
+  for (const s of extraSections) setSection(doc, s.heading, s.body);
+  const body = renderMarkdown(doc, doc.sections ?? []);
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, body, "utf8");
 }

@@ -39,8 +39,16 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
 
   useInput(
     (input, key) => {
+      // q / Ctrl+C must ALWAYS work — including while a prompt is waiting.
+      // Otherwise the user has no escape hatch when the tool asks something
+      // they don't want to answer.
+      if (input === "q" || (key.ctrl && input === "c")) {
+        onExit?.();
+        return;
+      }
+      // Everything else (like 'r' to toggle raw logs) is disabled while a
+      // prompt is waiting so the keys reach ink-select-input / ink-text-input.
       if (prompt) return;
-      if (input === "q" || (key.ctrl && input === "c")) onExit?.();
       if (input === "r") setShowRaw((v) => !v);
     },
     { isActive: isRawModeSupported },
@@ -54,9 +62,25 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
     return () => clearInterval(iv);
   }, [doneExit]);
 
+  // Ref mirror of `prompt` so the log-flush scheduler (which runs outside
+  // React renders) can cheaply check whether a prompt is awaiting an answer.
+  const promptActiveRef = useRef<boolean>(false);
+  useEffect(() => {
+    promptActiveRef.current = prompt !== null;
+    // When a prompt opens or closes, trigger a single re-render so the
+    // Activity pane's "paused" badge flips immediately.
+    setLogsRev((r) => r + 1);
+  }, [prompt]);
+
   useEffect(() => {
     let flushTimer: NodeJS.Timeout | null = null;
     const scheduleFlush = () => {
+      // While a prompt is awaiting a user answer, the phase is blocked on
+      // `await askPrompt(...)`. We pause re-rendering so the Activity pane
+      // stops scrolling and the prompt dialog is the clear focal point.
+      // New events still accumulate in the ring buffer and appear when the
+      // prompt is answered.
+      if (promptActiveRef.current) return;
       if (flushTimer) return;
       flushTimer = setTimeout(() => {
         flushTimer = null;
@@ -213,9 +237,15 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
 
       <Box borderStyle="single" paddingX={1}>
         {doneExit === null ? (
-          <Text dimColor>
-            <Spinner type="dots" /> running — press <Text bold>r</Text> to toggle raw logs, <Text bold>q</Text> to quit
-          </Text>
+          prompt ? (
+            <Text color="yellow" bold>
+              ⏸ paused — waiting for your answer above. Use ↑/↓ to select, Enter to confirm. Press <Text bold>q</Text> at any time to abort.
+            </Text>
+          ) : (
+            <Text dimColor>
+              <Spinner type="dots" /> running — press <Text bold>r</Text> to toggle raw logs, <Text bold>q</Text> to quit
+            </Text>
+          )
         ) : doneExit === 0 ? (
           <Text color="green" bold>All phases completed. Press q to exit.</Text>
         ) : (

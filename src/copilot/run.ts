@@ -14,6 +14,10 @@ export interface CopilotRunOptions {
   extraArgs?: string[];
   mode?: "autopilot" | "plan" | "interactive";
   env?: Record<string, string>;
+  /** Stream reasoning summaries from the model (on by default for visibility). */
+  reasoning?: boolean;
+  /** Reasoning effort for supported models. */
+  reasoningEffort?: "low" | "medium" | "high" | "xhigh";
 }
 
 export interface CopilotRunResult {
@@ -51,6 +55,14 @@ function buildArgs(opts: CopilotRunOptions): string[] {
   if (typeof opts.maxAutopilotContinues === "number") {
     args.push("--max-autopilot-continues", String(opts.maxAutopilotContinues));
   }
+  // Request reasoning summaries from the underlying model so the TUI can
+  // render a live "thinking" stream. Default on; callers can opt out.
+  if (opts.reasoning !== false) {
+    args.push("--enable-reasoning-summaries");
+  }
+  if (opts.reasoningEffort) {
+    args.push("--effort", opts.reasoningEffort);
+  }
   if (opts.extraArgs) args.push(...opts.extraArgs);
   return args;
 }
@@ -84,6 +96,28 @@ function parseCopilotLine(line: string): CopilotEvent[] {
       : undefined);
   if (sessionId) events.push({ type: "session", sessionId });
 
+  // Reasoning summaries come from the model under many event names. Be
+  // permissive and surface any "thinking" shape so the TUI's third column
+  // stays live regardless of which vendor Copilot is wrapping.
+  const lowerKind = kind.toLowerCase();
+  if (/reason|think/.test(lowerKind)) {
+    const text = extractText(
+      obj.content ?? obj.text ?? obj.summary ?? obj.delta ?? obj.value ?? obj.thought,
+    );
+    if (text) {
+      events.push({ type: "reasoning", text });
+      return events;
+    }
+  }
+  // Fallback: some shapes put reasoning under a top-level `reasoning`
+  // property regardless of the event `type`. Grab it if we haven't already
+  // produced a reasoning event above.
+  const reasoningField = obj.reasoning ?? obj.thinking;
+  if (reasoningField) {
+    const text = extractText(reasoningField);
+    if (text) events.push({ type: "reasoning", text });
+  }
+
   switch (kind) {
     case "message":
     case "assistant_message":
@@ -95,12 +129,6 @@ function parseCopilotLine(line: string): CopilotEvent[] {
       const content = obj.content ?? obj.text ?? obj.message;
       const text = extractText(content);
       if (text) events.push({ type: "message", role, text });
-      break;
-    }
-    case "reasoning":
-    case "thinking": {
-      const text = extractText(obj.content ?? obj.text ?? obj.summary);
-      if (text) events.push({ type: "reasoning", text });
       break;
     }
     case "tool_use":

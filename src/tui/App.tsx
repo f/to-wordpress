@@ -88,9 +88,22 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
   }, [bus]);
 
   const visibleLogs = useMemo(
-    () => (showRaw ? logsRef.current : logsRef.current.filter((l) => l.kind !== "raw")).slice(-40),
+    () =>
+      logsRef.current
+        .filter((l) => {
+          if (l.kind === "reasoning") return false; // goes to the "Thinking" pane
+          if (!showRaw && l.kind === "raw") return false;
+          return true;
+        })
+        .slice(-40),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [showRaw, logsRev],
+  );
+
+  const reasoningLogs = useMemo(
+    () => logsRef.current.filter((l) => l.kind === "reasoning").slice(-40),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [logsRev],
   );
 
   const lastActivityAt =
@@ -119,7 +132,7 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
             );
           })}
         </Box>
-        <Box flexDirection="column" flexGrow={1} borderStyle="single" paddingX={1}>
+        <Box flexDirection="column" flexGrow={1} borderStyle="single" paddingX={1} marginRight={1}>
           <Box>
             <Text bold>Activity</Text>
             <Text dimColor>  (last {visibleLogs.length} events)</Text>
@@ -138,6 +151,23 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
                 <Spinner type="dots" /> copilot thinking… (idle {idleSeconds}s in {runningPhaseId})
               </Text>
             </Box>
+          ) : null}
+        </Box>
+        <Box flexDirection="column" flexGrow={1} borderStyle="single" paddingX={1}>
+          <Box>
+            <Text bold color="magenta">Thinking</Text>
+            <Text dimColor>  (reasoning summaries)</Text>
+          </Box>
+          {reasoningLogs.map((l) => (
+            <Box key={l.id}>
+              <Text color="magenta">💭 </Text>
+              <Text color="magenta" dimColor wrap="wrap">{truncate(l.text, 480)}</Text>
+            </Box>
+          ))}
+          {reasoningLogs.length === 0 ? (
+            <Text dimColor>
+              (waiting for copilot to think — requires a reasoning-capable model)
+            </Text>
           ) : null}
         </Box>
       </Box>

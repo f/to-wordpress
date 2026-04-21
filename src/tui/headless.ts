@@ -1,7 +1,8 @@
 import chalk, { type ChalkInstance } from "chalk";
-import type { UiBus, LogEntry, PromptRequest } from "./bus.js";
+import type { UiBus, LogEntry, PromptRequest, EtaUpdate } from "./bus.js";
 import type { PhaseId, PhaseStatus } from "../types.js";
 import { PHASE_TITLES } from "./bus.js";
+import { formatDuration } from "../phases/eta.js";
 
 /**
  * Non-TTY logger. Subscribes to the UiBus and writes human-readable lines to
@@ -34,16 +35,23 @@ export function attachHeadlessLogger(bus: UiBus, sourceDir: string): () => void 
     else process.stdout.write(chalk.red.bold(`✖ migration exited with code ${exitCode}\n`));
   };
 
+  const onEta = (u: EtaUpdate) => {
+    const body = `ETA: total ${formatDuration(u.totalSeconds)} · remaining ${formatDuration(u.remainingSeconds)}${u.active ? " · now " + PHASE_TITLES[u.active] : ""}`;
+    process.stdout.write(chalk.cyan.dim(body) + "\n");
+  };
+
   bus.on("phase", onPhase);
   bus.on("log", onLog);
   bus.on("prompt:request", onPrompt);
   bus.on("done", onDone);
+  bus.on("eta", onEta);
 
   return () => {
     bus.off("phase", onPhase);
     bus.off("log", onLog);
     bus.off("prompt:request", onPrompt);
     bus.off("done", onDone);
+    bus.off("eta", onEta);
   };
 }
 

@@ -29,6 +29,12 @@ export interface LogEntry {
   text: string;
 }
 
+export interface EtaUpdate {
+  totalSeconds: number;
+  remainingSeconds: number;
+  active?: PhaseId;
+}
+
 export interface PromptRequest {
   id: string;
   title: string;

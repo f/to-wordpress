@@ -4,7 +4,8 @@ import Spinner from "ink-spinner";
 import SelectInput from "ink-select-input";
 import TextInput from "ink-text-input";
 import type { PhaseId, PhaseStatus } from "../types.js";
-import { PHASE_TITLES, UiBus, type LogEntry, type PromptRequest } from "./bus.js";
+import { PHASE_TITLES, UiBus, type EtaUpdate, type LogEntry, type PromptRequest } from "./bus.js";
+import { formatDuration } from "../phases/eta.js";
 
 interface AppProps {
   bus: UiBus;
@@ -32,6 +33,8 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
   const [showRaw, setShowRaw] = useState(false);
   const [doneExit, setDoneExit] = useState<number | null>(null);
   const [now, setNow] = useState<number>(Date.now());
+  const [startedAt] = useState<number>(Date.now());
+  const [eta, setEta] = useState<EtaUpdate | null>(null);
   const { isRawModeSupported } = useStdin();
 
   useInput(
@@ -74,15 +77,18 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
       setTextValue(req.default ?? "");
     };
     const onDone = (exitCode: number) => setDoneExit(exitCode);
+    const onEta = (update: EtaUpdate) => setEta(update);
     bus.on("log", onLog);
     bus.on("phase", onPhase);
     bus.on("prompt:request", onPrompt);
     bus.on("done", onDone);
+    bus.on("eta", onEta);
     return () => {
       bus.off("log", onLog);
       bus.off("phase", onPhase);
       bus.off("prompt:request", onPrompt);
       bus.off("done", onDone);
+      bus.off("eta", onEta);
       if (flushTimer) clearTimeout(flushTimer);
     };
   }, [bus]);
@@ -115,8 +121,28 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
   return (
     <Box flexDirection="column">
       <Box borderStyle="round" borderColor="cyan" paddingX={1} flexDirection="column">
-        <Text bold color="cyan">to-wordpress</Text>
-        <Text dimColor>source: {sourceDir}</Text>
+        <Box>
+          <Text bold color="cyan">to-wordpress</Text>
+          <Text dimColor>  source: {sourceDir}</Text>
+        </Box>
+        <Box>
+          <Text dimColor>elapsed: </Text>
+          <Text>{formatDuration((now - startedAt) / 1000)}</Text>
+          <Text dimColor>   ·   eta total: </Text>
+          <Text color={eta ? "cyan" : "gray"}>
+            {eta ? formatDuration(eta.totalSeconds) : "calculating…"}
+          </Text>
+          <Text dimColor>   ·   remaining: </Text>
+          <Text color={eta ? "green" : "gray"} bold>
+            {eta ? formatDuration(eta.remainingSeconds) : "—"}
+          </Text>
+          {eta?.active ? (
+            <>
+              <Text dimColor>   ·   current: </Text>
+              <Text color="magenta">{PHASE_TITLES[eta.active]}</Text>
+            </>
+          ) : null}
+        </Box>
       </Box>
 
       <Box>

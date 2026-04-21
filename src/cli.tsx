@@ -26,6 +26,8 @@ import {
 } from "./state/migration.js";
 import { runFresh } from "./phases/fresh.js";
 import { commitPhase, setupGit } from "./phases/git.js";
+import { computeEta } from "./phases/eta.js";
+import type { PhaseStatus } from "./types.js";
 
 const PACKAGE_VERSION = "0.1.2";
 
@@ -232,10 +234,10 @@ async function runPhaseStep<T>(
     attempt++;
     try {
       markPhase(doc, phase, "running");
-      await saveAndApply(ctx, doc, `started ${phase}`);
+      await saveAndApply(ctx, doc, `started ${phase}`, bus);
       const result = await run();
       markPhase(doc, phase, "ok");
-      await saveAndApply(ctx, doc, `finished ${phase}`);
+      await saveAndApply(ctx, doc, `finished ${phase}`, bus);
       if (gitEnabled) await commitPhase(ctx, phase, bus, { active: true });
       return result;
     } catch (err) {
@@ -245,7 +247,7 @@ async function runPhaseStep<T>(
         message: `${PHASE_TITLES[phase]} failed (attempt ${attempt}): ${msg}`,
       });
       markPhase(doc, phase, "fail", msg);
-      await saveAndApply(ctx, doc, `failed ${phase}`);
+      await saveAndApply(ctx, doc, `failed ${phase}`, bus);
 
       if (ctx.flags.yes) throw err;
 
@@ -267,7 +269,7 @@ async function runPhaseStep<T>(
       }
       if (ans === "skip") {
         markPhase(doc, phase, "skipped", `user skipped after ${attempt} attempt${attempt === 1 ? "" : "s"}`);
-        await saveAndApply(ctx, doc, `skipped ${phase}`);
+        await saveAndApply(ctx, doc, `skipped ${phase}`, bus);
         if (gitEnabled) await commitPhase(ctx, `${phase} (skipped)`, bus, { active: true });
         return undefined;
       }
@@ -296,6 +298,7 @@ async function saveAndApply(
   ctx: MigrationContext,
   doc: MigrationDoc,
   note: string,
+  bus?: UiBus,
 ): Promise<void> {
   applyContextToDoc(doc, ctx);
   await saveMigrationDoc(ctx.planPath, doc, [
@@ -304,6 +307,18 @@ async function saveAndApply(
       body: `${note} at ${new Date().toISOString()}`,
     },
   ]);
+  if (bus && ctx.detected) {
+    const statuses: Partial<Record<PhaseId, PhaseStatus>> = {};
+    for (const [id, entry] of Object.entries(doc.phases)) {
+      statuses[id as PhaseId] = entry.status as PhaseStatus;
+    }
+    const snap = computeEta(ctx, statuses);
+    bus.emit("eta", {
+      totalSeconds: snap.totalSeconds,
+      remainingSeconds: snap.remainingSeconds,
+      active: snap.active,
+    });
+  }
 }
 
 main().catch((err) => {

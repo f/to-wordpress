@@ -1,0 +1,17 @@
+node_modules
+dist
+*.log
+*.tgz
+.DS_Store
+.env
+.env.*
+!.env.example
+.tsbuildinfo
+
+# Local test fixture (has its own git repo)
+/f.github.io/
+
+# Migration outputs (written into source repos under test)
+/fixtures/**/WORDPRESS_MIGRATION
+/fixtures/**/WORDPRESS_MIGRATION.md
+/fixtures/**/.wp-env.json

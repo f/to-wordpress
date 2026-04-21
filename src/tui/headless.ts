@@ -9,8 +9,11 @@ import { formatDuration } from "../phases/eta.js";
  * stdout. Used when stdin is not a TTY (CI, pipes), or when a user passes
  * --no-tui. Prompts are auto-answered by bus.autoAnswer upstream.
  */
+const WP_BLUE = chalk.hex("#21759B");
+
 export function attachHeadlessLogger(bus: UiBus, sourceDir: string): () => void {
-  process.stdout.write(chalk.cyan.bold("to-wordpress") + "  source=" + sourceDir + "\n");
+  process.stdout.write(WP_BLUE.bold("to  wordpress") + "  " + chalk.italic("· Code is Poetry.") + "\n");
+  process.stdout.write(chalk.dim("manuscript: ") + sourceDir + "\n");
 
   const onPhase = (id: PhaseId, status: PhaseStatus, message?: string) => {
     const glyph = statusGlyph(status);
@@ -31,13 +34,16 @@ export function attachHeadlessLogger(bus: UiBus, sourceDir: string): () => void 
   };
 
   const onDone = (exitCode: number) => {
-    if (exitCode === 0) process.stdout.write(chalk.green.bold("✔ migration complete\n"));
-    else process.stdout.write(chalk.red.bold(`✖ migration exited with code ${exitCode}\n`));
+    if (exitCode === 0) {
+      process.stdout.write(chalk.green.bold("✦ The volume is bound. Your WordPress stands ready for its readers.\n"));
+    } else {
+      process.stdout.write(chalk.red.bold(`✖ The press fell silent — exit code ${exitCode}.\n`));
+    }
   };
 
   const onEta = (u: EtaUpdate) => {
-    const body = `ETA: total ${formatDuration(u.totalSeconds)} · remaining ${formatDuration(u.remainingSeconds)}${u.active ? " · now " + PHASE_TITLES[u.active] : ""}`;
-    process.stdout.write(chalk.cyan.dim(body) + "\n");
+    const body = `verse: full ${formatDuration(u.totalSeconds)} · lines to go ${formatDuration(u.remainingSeconds)}${u.active ? " · now writing " + PHASE_TITLES[u.active] : ""}`;
+    process.stdout.write(WP_BLUE.dim(body) + "\n");
   };
 
   bus.on("phase", onPhase);

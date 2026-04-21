@@ -23,7 +23,7 @@ export interface VerifyReport {
 }
 
 export async function runVerify(ctx: MigrationContext, bus: UiBus): Promise<VerifyReport> {
-  bus.pushStreamEvent("verify", { type: "phase_start", phase: "verify", message: "verifying migration" });
+  bus.pushStreamEvent("verify", { type: "phase_start", phase: "verify", message: "reading it aloud — proofing the bound volume against the original" });
   const detected = ctx.detected;
   if (!detected) throw new Error("detect phase must run before verify");
   if (!ctx.wpUrl) throw new Error("boot phase must run before verify");

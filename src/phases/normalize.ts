@@ -23,7 +23,7 @@ export interface NormalizeResult {
 }
 
 export async function runNormalize(ctx: MigrationContext, bus: UiBus): Promise<NormalizeResult> {
-  bus.pushStreamEvent("normalize", { type: "phase_start", phase: "normalize", message: "normalizing content" });
+  bus.pushStreamEvent("normalize", { type: "phase_start", phase: "normalize", message: "measuring the meter — polishing every verse to the same line-length" });
   const detected = ctx.detected;
   const choices = ctx.choices;
   if (!detected || !choices) throw new Error("plan phase must run before normalize");

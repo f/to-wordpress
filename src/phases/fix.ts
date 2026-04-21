@@ -22,7 +22,7 @@ export async function runFixLoop(
     bus.pushStreamEvent("fix", {
       type: "phase_start",
       phase: "fix",
-      message: `iteration ${iter}/${maxIter}: ${report.issues.length} issue${report.issues.length === 1 ? "" : "s"}`,
+      message: `revising the lines — pass ${iter} of ${maxIter}, ${report.issues.length} verse${report.issues.length === 1 ? "" : "s"} to polish`,
     });
 
     const tpl = await loadPrompt("fix");
@@ -49,12 +49,16 @@ export async function runFixLoop(
     report = await runVerify(ctx, bus);
   }
   if (report.ok) {
-    bus.pushStreamEvent("fix", { type: "phase_ok", phase: "fix", message: `clean after ${iter} fix iteration${iter === 1 ? "" : "s"}` });
+    bus.pushStreamEvent("fix", {
+      type: "phase_ok",
+      phase: "fix",
+      message: `the verses scan true — clean after ${iter} revision${iter === 1 ? "" : "s"}`,
+    });
   } else {
     bus.pushStreamEvent("fix", {
       type: "phase_fail",
       phase: "fix",
-      message: `${report.issues.length} issue${report.issues.length === 1 ? "" : "s"} remain after ${iter} iterations`,
+      message: `${report.issues.length} verse${report.issues.length === 1 ? "" : "s"} still stumble after ${iter} revisions — set aside for a human editor`,
     });
   }
   return report;

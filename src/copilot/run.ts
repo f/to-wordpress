@@ -28,6 +28,22 @@ export interface CopilotRunResult {
 
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 
+/**
+ * Default Copilot model for every creative phase. Opus is our reasoning
+ * workhorse; paired with medium reasoning effort it's the sweet spot of
+ * quality vs. latency for Liquid-to-PHP translation, custom-block generation,
+ * and the verify fix loop. Override with --model <slug>, COPILOT_MODEL, or
+ * --effort / COPILOT_EFFORT.
+ *
+ * NOTE: Copilot CLI model slugs are family-only (e.g. `claude-opus-4.7`);
+ * effort is a separate `--effort` flag, not a suffix.
+ */
+export const DEFAULT_COPILOT_MODEL =
+  process.env.COPILOT_MODEL ?? "claude-opus-4.7";
+
+export const DEFAULT_COPILOT_EFFORT: "low" | "medium" | "high" | "xhigh" =
+  (process.env.COPILOT_EFFORT as "low" | "medium" | "high" | "xhigh" | undefined) ?? "medium";
+
 function buildArgs(opts: CopilotRunOptions): string[] {
   const args: string[] = [
     "-p",
@@ -50,7 +66,7 @@ function buildArgs(opts: CopilotRunOptions): string[] {
   if (opts.denyTools && opts.denyTools.length > 0) {
     args.push(`--deny-tool=${opts.denyTools.join(",")}`);
   }
-  if (opts.model) args.push("--model", opts.model);
+  args.push("--model", opts.model ?? DEFAULT_COPILOT_MODEL);
   if (opts.resumeSessionId) args.push("--resume", opts.resumeSessionId);
   if (typeof opts.maxAutopilotContinues === "number") {
     args.push("--max-autopilot-continues", String(opts.maxAutopilotContinues));
@@ -60,9 +76,7 @@ function buildArgs(opts: CopilotRunOptions): string[] {
   if (opts.reasoning !== false) {
     args.push("--enable-reasoning-summaries");
   }
-  if (opts.reasoningEffort) {
-    args.push("--effort", opts.reasoningEffort);
-  }
+  args.push("--effort", opts.reasoningEffort ?? DEFAULT_COPILOT_EFFORT);
   if (opts.extraArgs) args.push(...opts.extraArgs);
   return args;
 }
@@ -96,13 +110,25 @@ function parseCopilotLine(line: string): CopilotEvent[] {
       : undefined);
   if (sessionId) events.push({ type: "session", sessionId });
 
-  // Reasoning summaries come from the model under many event names. Be
-  // permissive and surface any "thinking" shape so the TUI's third column
-  // stays live regardless of which vendor Copilot is wrapping.
+  // Reasoning summaries come from the model under many event names. Copilot
+  // CLI today emits `assistant.reasoning_delta` / `assistant.reasoning` with
+  // the payload on `data.deltaContent` / `data.content`. We stay permissive
+  // so the TUI's third column keeps working if the wire format shifts.
   const lowerKind = kind.toLowerCase();
   if (/reason|think/.test(lowerKind)) {
+    const data = (obj.data ?? {}) as Record<string, unknown>;
     const text = extractText(
-      obj.content ?? obj.text ?? obj.summary ?? obj.delta ?? obj.value ?? obj.thought,
+      data.deltaContent ??
+        data.delta_content ??
+        data.content ??
+        data.text ??
+        data.summary ??
+        obj.content ??
+        obj.text ??
+        obj.summary ??
+        obj.delta ??
+        obj.value ??
+        obj.thought,
     );
     if (text) {
       events.push({ type: "reasoning", text });
@@ -118,49 +144,79 @@ function parseCopilotLine(line: string): CopilotEvent[] {
     if (text) events.push({ type: "reasoning", text });
   }
 
+  // Copilot CLI today emits dotted event names and stuffs the real payload
+  // onto `data.*`. We dispatch on the dotted names first, then fall back to
+  // the older flat shapes we originally targeted so downstream tooling keeps
+  // working on either wire format.
+  const data = (obj.data ?? {}) as Record<string, unknown>;
+
   switch (kind) {
+    case "assistant.message":
+    case "assistant.message_delta":
     case "message":
     case "assistant_message":
     case "assistant": {
-      const role = ((obj.role as string | undefined) ?? "assistant") as
+      const role = ((obj.role as string | undefined) ?? (data.role as string | undefined) ?? "assistant") as
         | "assistant"
         | "user"
         | "system";
-      const content = obj.content ?? obj.text ?? obj.message;
-      const text = extractText(content);
+      const text = extractText(
+        data.deltaContent ??
+          data.delta_content ??
+          data.content ??
+          obj.content ??
+          obj.text ??
+          obj.message,
+      );
       if (text) events.push({ type: "message", role, text });
       break;
     }
+    case "tool.execution_start":
     case "tool_use":
     case "tool_call": {
       events.push({
         type: "tool_use",
-        name: String(obj.name ?? obj.tool ?? "tool"),
-        input: obj.input ?? obj.arguments ?? obj.args,
-        id: obj.id as string | undefined,
+        name: String(data.toolName ?? data.name ?? obj.name ?? obj.tool ?? "tool"),
+        input: data.arguments ?? data.input ?? obj.input ?? obj.arguments ?? obj.args,
+        id: (data.toolCallId as string | undefined) ?? (obj.id as string | undefined),
       });
       break;
     }
+    case "tool.execution_complete":
     case "tool_result":
     case "tool_output": {
+      const result = (data.result ?? {}) as Record<string, unknown>;
       events.push({
         type: "tool_result",
-        name: obj.name as string | undefined,
-        output: obj.output ?? obj.result ?? obj.content,
-        id: obj.id as string | undefined,
-        isError: Boolean(obj.is_error ?? obj.isError),
+        name: (data.toolName as string | undefined) ?? (obj.name as string | undefined),
+        output:
+          result.content ??
+          result.detailedContent ??
+          data.output ??
+          obj.output ??
+          obj.result ??
+          obj.content,
+        id: (data.toolCallId as string | undefined) ?? (obj.id as string | undefined),
+        isError:
+          data.success === false ||
+          Boolean(obj.is_error ?? obj.isError),
       });
       break;
     }
-    case "error": {
+    case "error":
+    case "session.error": {
       events.push({
         type: "error",
-        message: String(obj.message ?? obj.error ?? "unknown error"),
+        message: String(
+          data.message ?? data.error ?? obj.message ?? obj.error ?? "unknown error",
+        ),
       });
       break;
     }
     default: {
-      const text = extractText(obj.content ?? obj.text ?? obj.message);
+      const text = extractText(
+        data.content ?? data.text ?? obj.content ?? obj.text ?? obj.message,
+      );
       if (text && !kind) events.push({ type: "message", role: "assistant", text });
     }
   }

@@ -9,7 +9,7 @@ import { runDetectors } from "../detectors/index.js";
  * folder, we always try to migrate.
  */
 export async function runDetect(ctx: MigrationContext, bus: UiBus): Promise<DetectedContext> {
-  bus.pushStreamEvent("detect", { type: "phase_start", phase: "detect", message: "scanning source" });
+  bus.pushStreamEvent("detect", { type: "phase_start", phase: "detect", message: "reading the manuscript for tone and shape" });
   const result = await runDetectors(ctx, bus);
   const ctxD = result.context;
   const postsCount = ctxD.collections.reduce((a, c) => a + c.count, 0);

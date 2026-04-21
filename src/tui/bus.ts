@@ -233,14 +233,34 @@ function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max) + "…" : s;
 }
 
+/**
+ * Poetic phase titles. WordPress's tagline is "Code is Poetry" — so the tool
+ * narrates each phase as a step in writing and binding a book of verse.
+ * The backing `phase` id stays machine-friendly (`detect`, `plan`, …) for
+ * commits, state files, and CLI args; these titles are for humans reading
+ * the TUI.
+ */
 export const PHASE_TITLES: Record<PhaseId, string> = {
-  detect: "Detect source",
-  plan: "Plan migration",
-  boot: "Boot wp-env",
-  theme: "Generate theme",
-  plugin: "Generate plugin",
-  normalize: "Normalize content",
-  import: "Import into WP",
-  verify: "Verify migration",
-  fix: "Auto-fix gaps",
+  detect: "Listening for the muse",
+  plan: "Sketching the stanzas",
+  boot: "Lighting the press",
+  theme: "Weaving the theme",
+  plugin: "Scoring the verses",
+  normalize: "Measuring the meter",
+  import: "Binding the manuscript",
+  verify: "Reading it aloud",
+  fix: "Revising the lines",
+};
+
+/** One-word verbs for compact spots (e.g. git commit messages if ever surfaced). */
+export const PHASE_VERBS: Record<PhaseId, string> = {
+  detect: "listen",
+  plan: "sketch",
+  boot: "light",
+  theme: "weave",
+  plugin: "score",
+  normalize: "measure",
+  import: "bind",
+  verify: "read",
+  fix: "revise",
 };

@@ -18,7 +18,7 @@ const REQUIRED_TEMPLATES = [
 ];
 
 export async function runTheme(ctx: MigrationContext, bus: UiBus): Promise<void> {
-  bus.pushStreamEvent("theme", { type: "phase_start", phase: "theme", message: "generating theme" });
+  bus.pushStreamEvent("theme", { type: "phase_start", phase: "theme", message: "weaving the theme — turning verses of Liquid into PHP" });
   const detected = ctx.detected;
   if (!detected) throw new Error("detect phase must run before theme");
 

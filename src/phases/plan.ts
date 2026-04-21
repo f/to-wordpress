@@ -11,7 +11,7 @@ import type { UiBus } from "../tui/bus.js";
 import { analyzePages } from "./pages.js";
 
 export async function runPlan(ctx: MigrationContext, bus: UiBus): Promise<UserChoices> {
-  bus.pushStreamEvent("plan", { type: "phase_start", phase: "plan", message: "asking URL-formatting questions" });
+  bus.pushStreamEvent("plan", { type: "phase_start", phase: "plan", message: "sketching stanzas — a few choices before we press on" });
 
   const detected = ctx.detected;
   if (!detected) throw new Error("detect phase must run before plan");

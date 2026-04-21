@@ -27,7 +27,7 @@ interface ImportEntry {
 }
 
 export async function runImport(ctx: MigrationContext, bus: UiBus): Promise<void> {
-  bus.pushStreamEvent("import", { type: "phase_start", phase: "import", message: "importing into WordPress" });
+  bus.pushStreamEvent("import", { type: "phase_start", phase: "import", message: "binding the manuscript — setting every page and post in WordPress" });
   const detected = ctx.detected;
   const choices = ctx.choices;
   if (!detected || !choices) throw new Error("plan phase must run before import");

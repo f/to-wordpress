@@ -7,6 +7,17 @@ import type { PhaseId, PhaseStatus } from "../types.js";
 import { PHASE_TITLES, UiBus, type EtaUpdate, type LogEntry, type PromptRequest } from "./bus.js";
 import { formatDuration } from "../phases/eta.js";
 
+/** WordPress brand blue, used for the headline + accents. */
+const WP_BLUE = "#21759B";
+
+/**
+ * WordPress-style wordmark. Plain casing ("to WordPress") per product
+ * direction — the TUI opens like a chapbook title page, but without the
+ * letter-spacing affectation.
+ */
+const HEADING_LINE_1 = "to WordPress";
+const HEADING_LINE_2 = "────────────";
+
 interface AppProps {
   bus: UiBus;
   sourceDir: string;
@@ -140,29 +151,48 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
     logsRef.current.length > 0 ? logsRef.current[logsRef.current.length - 1].ts : undefined;
   const runningPhaseId = (Object.values(phases).find((p) => p.status === "running") as PhaseRowState | undefined)?.id;
   const idleSeconds = lastActivityAt ? Math.max(0, Math.floor((now - lastActivityAt) / 1000)) : 0;
-  const showThinking = doneExit === null && runningPhaseId && idleSeconds >= 3;
+  // Hide the "the muse ponders…" spinner while a prompt is waiting — the
+  // phase is intentionally blocked on user input, not stalled.
+  const showThinking = doneExit === null && runningPhaseId && idleSeconds >= 3 && prompt === null;
 
   return (
     <Box flexDirection="column">
-      <Box borderStyle="round" borderColor="cyan" paddingX={1} flexDirection="column">
+      <Box
+        borderStyle="double"
+        borderColor={WP_BLUE}
+        paddingX={2}
+        flexDirection="column"
+      >
+        <Text color={WP_BLUE} bold>
+          {HEADING_LINE_1}
+        </Text>
+        <Text color={WP_BLUE}>{HEADING_LINE_2}</Text>
         <Box>
-          <Text bold color="cyan">to-wordpress</Text>
-          <Text dimColor>  source: {sourceDir}</Text>
+          <Text italic color={WP_BLUE}>
+            Code is Poetry.
+          </Text>
+          <Text dimColor>
+            {"  "}a press that weaves any codebase into a WordPress volume
+          </Text>
+        </Box>
+        <Box marginTop={1}>
+          <Text dimColor>manuscript: </Text>
+          <Text>{sourceDir}</Text>
         </Box>
         <Box>
-          <Text dimColor>elapsed: </Text>
+          <Text dimColor>composing for </Text>
           <Text>{formatDuration((now - startedAt) / 1000)}</Text>
-          <Text dimColor>   ·   eta total: </Text>
-          <Text color={eta ? "cyan" : "gray"}>
-            {eta ? formatDuration(eta.totalSeconds) : "calculating…"}
+          <Text dimColor>  ·  full verse </Text>
+          <Text color={eta ? WP_BLUE : "gray"}>
+            {eta ? formatDuration(eta.totalSeconds) : "measuring the rhyme…"}
           </Text>
-          <Text dimColor>   ·   remaining: </Text>
+          <Text dimColor>  ·  lines to go </Text>
           <Text color={eta ? "green" : "gray"} bold>
             {eta ? formatDuration(eta.remainingSeconds) : "—"}
           </Text>
           {eta?.active ? (
             <>
-              <Text dimColor>   ·   current: </Text>
+              <Text dimColor>  ·  now writing </Text>
               <Text color="magenta">{PHASE_TITLES[eta.active]}</Text>
             </>
           ) : null}
@@ -171,7 +201,7 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
 
       <Box>
         <Box flexDirection="column" width={32} borderStyle="single" paddingX={1} marginRight={1}>
-          <Text bold>Phases</Text>
+          <Text bold color={WP_BLUE}>Cantos</Text>
           {phaseOrder.map((id) => {
             const p = phases[id];
             return (
@@ -184,8 +214,8 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
         </Box>
         <Box flexDirection="column" flexGrow={1} borderStyle="single" paddingX={1} marginRight={1}>
           <Box>
-            <Text bold>Activity</Text>
-            <Text dimColor>  (last {visibleLogs.length} events)</Text>
+            <Text bold color={WP_BLUE}>Press</Text>
+            <Text dimColor>  (last {visibleLogs.length} lines set)</Text>
           </Box>
           {visibleLogs.map((l) => (
             <Box key={l.id}>
@@ -194,29 +224,32 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
               <Text wrap="truncate-end">{truncate(l.text, 240)}</Text>
             </Box>
           ))}
-          {visibleLogs.length === 0 ? <Text dimColor>(waiting for activity)</Text> : null}
+          {visibleLogs.length === 0 ? <Text dimColor>(the press is warming)</Text> : null}
           {showThinking ? (
             <Box marginTop={1}>
               <Text color="magenta">
-                <Spinner type="dots" /> copilot thinking… (idle {idleSeconds}s in {runningPhaseId})
+                <Spinner type="dots" /> the muse ponders… (quiet for {idleSeconds}s in {runningPhaseId})
               </Text>
             </Box>
           ) : null}
         </Box>
         <Box flexDirection="column" flexGrow={1} borderStyle="single" paddingX={1}>
           <Box>
-            <Text bold color="magenta">Thinking</Text>
-            <Text dimColor>  (reasoning summaries)</Text>
+            <Text bold color="magenta">Muse</Text>
+            <Text dimColor>  (the poet's thinking)</Text>
           </Box>
           {reasoningLogs.map((l) => (
             <Box key={l.id}>
-              <Text color="magenta">💭 </Text>
+              <Text color="magenta">✒  </Text>
               <Text color="magenta" dimColor wrap="wrap">{truncate(l.text, 480)}</Text>
             </Box>
           ))}
           {reasoningLogs.length === 0 ? (
-            <Text dimColor>
-              (waiting for copilot to think — requires a reasoning-capable model)
+            <Text dimColor wrap="wrap">
+              (the muse is silent — reasoning summaries stream only from OpenAI
+              models in Copilot CLI; try{" "}
+              <Text color="cyan">COPILOT_MODEL=gpt-5.4 COPILOT_EFFORT=high</Text>{" "}
+              to hear her)
             </Text>
           ) : null}
         </Box>
@@ -239,17 +272,21 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
         {doneExit === null ? (
           prompt ? (
             <Text color="yellow" bold>
-              ⏸ paused — waiting for your answer above. Use ↑/↓ to select, Enter to confirm. Press <Text bold>q</Text> at any time to abort.
+              ✎ pen paused — awaiting your voice above. ↑/↓ to choose, ↵ to commit the line. Press <Text bold>q</Text> to set down the pen.
             </Text>
           ) : (
             <Text dimColor>
-              <Spinner type="dots" /> running — press <Text bold>r</Text> to toggle raw logs, <Text bold>q</Text> to quit
+              <Spinner type="dots" /> composing — press <Text bold>r</Text> to turn the raw pages, <Text bold>q</Text> to set down the pen
             </Text>
           )
         ) : doneExit === 0 ? (
-          <Text color="green" bold>All phases completed. Press q to exit.</Text>
+          <Text color="green" bold>
+            ✦ The volume is bound. Your WordPress stands ready for its readers. Press q to close.
+          </Text>
         ) : (
-          <Text color="red" bold>Migration exited with code {doneExit}. Press q to exit.</Text>
+          <Text color="red" bold>
+            ✖ The press fell silent — exit code {doneExit}. Press q to close the chapter.
+          </Text>
         )}
       </Box>
     </Box>

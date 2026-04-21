@@ -6,7 +6,7 @@ import type { UiBus } from "../tui/bus.js";
 import { buildWpEnvConfig, wpEnvStart, writeWpEnvConfig } from "../wp/wpEnv.js";
 
 export async function runBoot(ctx: MigrationContext, bus: UiBus): Promise<void> {
-  bus.pushStreamEvent("boot", { type: "phase_start", phase: "boot", message: "preparing wp-env" });
+  bus.pushStreamEvent("boot", { type: "phase_start", phase: "boot", message: "lighting the press — warming wp-env into the room" });
   const detected = ctx.detected;
   if (!detected) throw new Error("detect phase must run before boot");
 

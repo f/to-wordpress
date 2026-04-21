@@ -27,6 +27,7 @@ import {
 import { runFresh } from "./phases/fresh.js";
 import { commitPhase, setupGit } from "./phases/git.js";
 import { computeEta } from "./phases/eta.js";
+import { DEFAULT_COPILOT_MODEL, DEFAULT_COPILOT_EFFORT } from "./copilot/run.js";
 import type { PhaseStatus } from "./types.js";
 
 const PACKAGE_VERSION = "0.1.2";
@@ -146,6 +147,16 @@ async function main(): Promise<void> {
   }
 
   const gitEnabled = opts.git !== false;
+
+  // Announce which Copilot model will do the creative work. Users asked to
+  // see this up front so surprises about quality/latency are off the table.
+  if (!opts.skipCopilot) {
+    bus.pushStreamEvent(undefined, {
+      type: "info",
+      phase: "detect",
+      message: `Copilot model: ${DEFAULT_COPILOT_MODEL} · effort: ${DEFAULT_COPILOT_EFFORT} (override with --model / COPILOT_MODEL, --effort / COPILOT_EFFORT)`,
+    });
+  }
 
   let exitCode = 0;
   try {

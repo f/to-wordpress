@@ -7,7 +7,7 @@ import type { UiBus } from "../tui/bus.js";
 import { runCopilotPhase } from "./theme.js";
 
 export async function runPlugin(ctx: MigrationContext, bus: UiBus): Promise<void> {
-  bus.pushStreamEvent("plugin", { type: "phase_start", phase: "plugin", message: "generating site plugin" });
+  bus.pushStreamEvent("plugin", { type: "phase_start", phase: "plugin", message: "scoring the verses — binding features into a site plugin" });
   const detected = ctx.detected;
   const choices = ctx.choices;
   if (!detected || !choices) throw new Error("plan phase must run before plugin");

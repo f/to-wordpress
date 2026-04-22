@@ -14,9 +14,7 @@ export interface CopilotRunOptions {
   extraArgs?: string[];
   mode?: "autopilot" | "plan" | "interactive";
   env?: Record<string, string>;
-  /** Stream reasoning summaries from the model (on by default for visibility). */
   reasoning?: boolean;
-  /** Reasoning effort for supported models. */
   reasoningEffort?: "low" | "medium" | "high" | "xhigh";
 }
 
@@ -28,13 +26,6 @@ export interface CopilotRunResult {
 
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 
-/**
- * Default Copilot model and reasoning effort for every creative phase.
- * Override with `--model` / `COPILOT_MODEL` and `--effort` / `COPILOT_EFFORT`.
- *
- * NOTE: Model slugs are whatever the Copilot CLI accepts (e.g. `gpt-5.4`);
- * effort is a separate `--effort` flag, not a suffix on the model name.
- */
 export const DEFAULT_COPILOT_MODEL = process.env.COPILOT_MODEL ?? "gpt-5.4";
 
 export const DEFAULT_COPILOT_EFFORT: "low" | "medium" | "high" | "xhigh" =
@@ -67,8 +58,6 @@ function buildArgs(opts: CopilotRunOptions): string[] {
   if (typeof opts.maxAutopilotContinues === "number") {
     args.push("--max-autopilot-continues", String(opts.maxAutopilotContinues));
   }
-  // Request reasoning summaries from the underlying model so the TUI can
-  // render a live "thinking" stream. Default on; callers can opt out.
   if (opts.reasoning !== false) {
     args.push("--enable-reasoning-summaries");
   }
@@ -78,22 +67,20 @@ function buildArgs(opts: CopilotRunOptions): string[] {
 }
 
 /**
- * Parse a single JSONL line emitted by `copilot -p --output-format json` and
- * normalize it into one or more CopilotEvent values. Copilot's event shape is
- * still evolving; we defensively fan-out on any known discriminators and
- * always emit a raw `stdout` event so the TUI can display everything.
+ * Parse a single JSONL line from `copilot --output-format json` into
+ * CopilotEvent values. Only emits a raw `stdout` fallback when the line
+ * cannot be parsed as JSON at all — structured events never emit a
+ * duplicate `stdout` alongside them.
  */
 function parseCopilotLine(line: string): CopilotEvent[] {
-  const events: CopilotEvent[] = [];
-  let parsed: unknown = undefined;
+  let parsed: unknown;
   try {
     parsed = JSON.parse(line);
   } catch {
-    events.push({ type: "stdout", line });
-    return events;
+    return [{ type: "stdout", line }];
   }
-  events.push({ type: "stdout", line, raw: parsed });
 
+  const events: CopilotEvent[] = [];
   const obj = parsed as Record<string, unknown>;
   const kind =
     (obj.type as string | undefined) ?? (obj.event as string | undefined) ?? "";
@@ -106,19 +93,10 @@ function parseCopilotLine(line: string): CopilotEvent[] {
       : undefined);
   if (sessionId) events.push({ type: "session", sessionId });
 
-  // Reasoning summaries come from the model under many event names. Copilot
-  // CLI emits BOTH `assistant.reasoning_delta` (streaming tokens) AND
-  // `assistant.reasoning` (consolidated full text) for the same content —
-  // forwarding both produces a duplicate paragraph in the TUI. Keep the
-  // delta stream (so users see live thinking) and drop the consolidation.
   const lowerKind = kind.toLowerCase();
   if (/reason|think/.test(lowerKind)) {
     const isDelta = /delta/.test(lowerKind);
-    const isConsolidation = !isDelta;
-    if (isConsolidation) {
-      // Skip the consolidated event to avoid duplicating its own deltas.
-      return events;
-    }
+    if (!isDelta) return events;
     const reasoningData = (obj.data ?? {}) as Record<string, unknown>;
     const text = extractText(
       reasoningData.deltaContent ??
@@ -138,19 +116,13 @@ function parseCopilotLine(line: string): CopilotEvent[] {
       return events;
     }
   }
-  // Fallback: some shapes put reasoning under a top-level `reasoning`
-  // property regardless of the event `type`. Grab it if we haven't already
-  // produced a reasoning event above.
+
   const reasoningField = obj.reasoning ?? obj.thinking;
   if (reasoningField) {
     const text = extractText(reasoningField);
     if (text) events.push({ type: "reasoning", text });
   }
 
-  // Copilot CLI today emits dotted event names and stuffs the real payload
-  // onto `data.*`. We dispatch on the dotted names first, then fall back to
-  // the older flat shapes we originally targeted so downstream tooling keeps
-  // working on either wire format.
   const data = (obj.data ?? {}) as Record<string, unknown>;
 
   switch (kind) {
@@ -159,10 +131,6 @@ function parseCopilotLine(line: string): CopilotEvent[] {
     case "message":
     case "assistant_message":
     case "assistant": {
-      // Like reasoning, Copilot emits deltas + a final consolidation. Drop
-      // the consolidation text so we don't print each assistant reply twice.
-      // Tool requests on the consolidated event are already covered by the
-      // separate `tool.execution_*` events.
       const isDelta = /delta/.test(kind.toLowerCase());
       const isConsolidation = kind.startsWith("assistant.") && !isDelta;
       if (isConsolidation) break;
@@ -258,10 +226,62 @@ function extractText(content: unknown): string | undefined {
   return undefined;
 }
 
-/**
- * Spawn `copilot -p …` and return an async iterable of CopilotEvents.
- * The child is killed when the iterator is abandoned or `signal` is aborted.
- */
+async function* mergeStreams(
+  stdoutLines: AsyncGenerator<string>,
+  stderrLines: AsyncGenerator<string>,
+): AsyncGenerator<CopilotEvent> {
+  type QueueItem = CopilotEvent[];
+  const queue: QueueItem[] = [];
+  let done = 0;
+  let waiting: ((value: void) => void) | null = null;
+
+  const signal = () => {
+    if (waiting) {
+      waiting(undefined);
+      waiting = null;
+    }
+  };
+
+  const pumpStdout = (async () => {
+    try {
+      for await (const line of stdoutLines) {
+        queue.push(parseCopilotLine(line));
+        signal();
+      }
+    } catch (err) {
+      queue.push([{ type: "error", message: (err as Error).message }]);
+      signal();
+    }
+    done++;
+    signal();
+  })();
+
+  const pumpStderr = (async () => {
+    try {
+      for await (const line of stderrLines) {
+        queue.push([{ type: "stderr", line }]);
+        signal();
+      }
+    } catch {
+      // stderr read errors are non-fatal
+    }
+    done++;
+    signal();
+  })();
+
+  while (done < 2 || queue.length > 0) {
+    if (queue.length === 0) {
+      if (done >= 2) break;
+      await new Promise<void>((r) => { waiting = r; });
+      continue;
+    }
+    const batch = queue.shift()!;
+    for (const ev of batch) yield ev;
+  }
+
+  await Promise.allSettled([pumpStdout, pumpStderr]);
+}
+
 export async function* runCopilot(
   opts: CopilotRunOptions,
   signal?: AbortSignal,
@@ -287,30 +307,17 @@ export async function* runCopilot(
   let sessionId: string | undefined;
   let assistantText = "";
 
-  const stderrLines = readLines(child.stderr!);
-  const stdoutLines = readLines(child.stdout!);
+  const merged = mergeStreams(
+    readLines(child.stdout!),
+    readLines(child.stderr!),
+  );
 
-  const stderrPump = (async () => {
-    const events: CopilotEvent[] = [];
-    for await (const line of stderrLines) {
-      events.push({ type: "stderr", line });
+  for await (const ev of merged) {
+    if (ev.type === "session") sessionId = ev.sessionId;
+    if (ev.type === "message" && ev.role === "assistant") {
+      assistantText += (assistantText ? "\n" : "") + ev.text;
     }
-    return events;
-  })();
-
-  try {
-    for await (const line of stdoutLines) {
-      const events = parseCopilotLine(line);
-      for (const ev of events) {
-        if (ev.type === "session") sessionId = ev.sessionId;
-        if (ev.type === "message" && ev.role === "assistant") {
-          assistantText += (assistantText ? "\n" : "") + ev.text;
-        }
-        yield ev;
-      }
-    }
-  } catch (err) {
-    yield { type: "error", message: (err as Error).message };
+    yield ev;
   }
 
   let exitCode = 0;
@@ -322,9 +329,6 @@ export async function* runCopilot(
     exitCode = e.exitCode ?? 1;
     yield { type: "error", message: e.shortMessage ?? e.message };
   }
-
-  const stderrEvents = await stderrPump;
-  for (const ev of stderrEvents) yield ev;
 
   yield { type: "done", exitCode };
 
@@ -346,9 +350,6 @@ async function* readLines(stream: NodeJS.ReadableStream): AsyncGenerator<string>
   if (rest.length > 0) yield rest;
 }
 
-/**
- * Convenience: run copilot to completion, collecting events into a single result.
- */
 export async function runCopilotToEnd(
   opts: CopilotRunOptions,
   onEvent?: (ev: CopilotEvent) => void,

@@ -1,20 +1,18 @@
 import chalk, { type ChalkInstance } from "chalk";
 import {
-  normalizeStreamDelta,
   type UiBus,
   type LogEntry,
-  type PromptRequest,
   type EtaUpdate,
   type MigrationSummary,
 } from "./bus.js";
-import type { PhaseId, PhaseStatus } from "../types.js";
+import type { PhaseId, PhaseStatus, LoopStatusEvent } from "../types.js";
 import { PHASE_TITLES } from "./bus.js";
 import { formatDuration } from "../phases/eta.js";
 
 /**
  * Non-TTY logger. Subscribes to the UiBus and writes human-readable lines to
- * stdout. Used when stdin is not a TTY (CI, pipes), or when a user passes
- * --no-tui. Prompts are auto-answered by bus.autoAnswer upstream.
+ * stdout. Uses the `delta` field on streaming LogEntries for reliable
+ * incremental output instead of reverse-engineering deltas from cumulative text.
  */
 const WP_BLUE = chalk.hex("#21759B");
 
@@ -22,21 +20,11 @@ export function attachHeadlessLogger(bus: UiBus, sourceDir: string): () => void 
   process.stdout.write(WP_BLUE.bold("to  wordpress") + "  " + chalk.italic("· Code is Poetry.") + "\n");
   process.stdout.write(chalk.dim("manuscript: ") + sourceDir + "\n");
 
-  // Coalesce live-streaming entries (assistant / reasoning). The bus
-  // re-emits the same `id` with growing cumulative text on every delta,
-  // but any interleaved tool call / info event resets the live stream,
-  // so consecutive deltas frequently arrive as _different_ ids that
-  // happen to belong to the same human "paragraph". We keep the
-  // paragraph flowing on a single terminal line until a non-streaming
-  // event (phase change, prompt, info, tool call) fires, at which point
-  // we close the line with a newline before printing the new event.
   let liveId: number | null = null;
-  let liveText = "";
   const closeLive = () => {
     if (liveId !== null) {
       process.stdout.write("\n");
       liveId = null;
-      liveText = "";
     }
   };
 
@@ -59,41 +47,33 @@ export function attachHeadlessLogger(bus: UiBus, sourceDir: string): () => void 
       return;
     }
 
-    // Log entries mirror {@link UiBus} live streaming: same `id` means
-    // cumulative `text` for that segment; a new `id` continues after a
-    // tool call or wrap — use {@link normalizeStreamDelta} so we never
-    // inject a spurious space between `WORD` and ` PRESS` (see bus).
-    if (liveId === null) {
-      process.stdout.write(prefix + colorize(entry.kind, entry.text));
-      liveId = entry.id;
-      liveText = entry.text;
-      return;
-    }
-
-    if (entry.id === liveId) {
-      const delta = entry.text.startsWith(liveText)
-        ? entry.text.slice(liveText.length)
-        : entry.text;
-      if (!entry.text.startsWith(liveText)) {
-        process.stdout.write("\n" + prefix + colorize(entry.kind, entry.text));
-      } else if (delta) {
-        process.stdout.write(colorize(entry.kind, delta));
+    // Use the delta field when available for clean incremental output
+    if (entry.delta !== undefined) {
+      if (liveId === null) {
+        process.stdout.write(prefix);
+      } else if (entry.id !== liveId) {
+        // New stream segment — no newline needed, just continue
       }
-      liveText = entry.text;
+      process.stdout.write(colorize(entry.kind, entry.delta));
+      liveId = entry.id;
       return;
     }
 
-    const chunk = entry.text.startsWith(liveText)
-      ? entry.text.slice(liveText.length)
-      : normalizeStreamDelta(liveText, entry.text);
-    process.stdout.write(colorize(entry.kind, chunk));
+    // Fallback for entries without delta: write full text on new line
+    closeLive();
+    process.stdout.write(prefix + colorize(entry.kind, entry.text));
     liveId = entry.id;
-    liveText = entry.text;
   };
 
-  const onPrompt = (req: PromptRequest) => {
+  const onLoopStatus = (ls: LoopStatusEvent) => {
     closeLive();
-    process.stdout.write(chalk.yellow(`? ${req.title}: ${req.message}`) + "\n");
+    const parts: string[] = [
+      `${PHASE_TITLES[ls.phase]}`,
+      `attempt ${ls.attempt}/${ls.maxAttempts}`,
+    ];
+    if (ls.fixPass > 0) parts.push(`fix ${ls.fixPass}/${ls.maxFixPasses}`);
+    parts.push(ls.stage);
+    process.stdout.write(chalk.cyan("⟳ " + parts.join(" · ")) + "\n");
   };
 
   let lastSummary: MigrationSummary | null = null;
@@ -145,7 +125,7 @@ export function attachHeadlessLogger(bus: UiBus, sourceDir: string): () => void 
 
   bus.on("phase", onPhase);
   bus.on("log", onLog);
-  bus.on("prompt:request", onPrompt);
+  bus.on("loop_status", onLoopStatus);
   bus.on("summary", onSummary);
   bus.on("done", onDone);
   bus.on("eta", onEta);
@@ -153,7 +133,7 @@ export function attachHeadlessLogger(bus: UiBus, sourceDir: string): () => void 
   return () => {
     bus.off("phase", onPhase);
     bus.off("log", onLog);
-    bus.off("prompt:request", onPrompt);
+    bus.off("loop_status", onLoopStatus);
     bus.off("summary", onSummary);
     bus.off("done", onDone);
     bus.off("eta", onEta);

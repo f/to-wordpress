@@ -3,8 +3,6 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { MigrationContext } from "../types.js";
 import type { UiBus } from "../tui/bus.js";
-import { interpolate, loadPrompt } from "../prompts/index.js";
-import { runCopilotPhase } from "./theme.js";
 
 export interface EndpointIssue {
   path: string;
@@ -20,83 +18,11 @@ export interface EndpointTestReport {
   issues: EndpointIssue[];
 }
 
-export interface TestFixOptions {
-  maxIterations?: number;
-  allowCopilot?: boolean;
-}
-
-export async function runTestFixLoop(
-  ctx: MigrationContext,
-  bus: UiBus,
-  opts: TestFixOptions = {},
-): Promise<EndpointTestReport> {
+export async function runEndpointSweep(ctx: MigrationContext, bus: UiBus): Promise<EndpointTestReport> {
   if (!ctx.wpUrl) throw new Error("boot phase must run before testfix");
-  const maxIter = opts.maxIterations ?? 3;
-  const allowCopilot = opts.allowCopilot !== false;
-
-  let report = await runEndpointSweep(ctx, bus);
-  let iter = 0;
-
-  while (!report.ok && allowCopilot && iter < maxIter) {
-    iter++;
-    bus.pushStreamEvent("testfix", {
-      type: "phase_start",
-      phase: "testfix",
-      message: `road-testing routes — pass ${iter}/${maxIter}, ${report.issues.length} endpoint issue${report.issues.length === 1 ? "" : "s"}`,
-    });
-
-    const tpl = await loadPrompt("test-fix");
-    const prompt = interpolate(tpl, {
-      TEST_REPORT_JSON: JSON.stringify(report, null, 2),
-      PASS: String(iter),
-      MAX_PASSES: String(maxIter),
-      WP_URL: ctx.wpUrl,
-      SOURCE_DIR: ctx.sourceDir,
-      THEME_DIR: ctx.themeDir,
-      PLUGIN_DIR: ctx.pluginDir,
-      CONTENT_DIR: ctx.contentDir,
-    });
-
-    const result = await runCopilotPhase(bus, "testfix", {
-      prompt,
-      cwd: ctx.sourceDir,
-      addDirs: [ctx.sourceDir, ctx.workDir, ctx.themeDir, ctx.pluginDir, ctx.contentDir],
-      resumeSessionId: ctx.copilotSessionId,
-      maxAutopilotContinues: 60,
-      timeoutMs: 15 * 60 * 1000,
-    });
-    if (result.sessionId) ctx.copilotSessionId = result.sessionId;
-    bus.pushStreamEvent("testfix", { type: "info", phase: "testfix", message: "re-running endpoint sweep" });
-    report = await runEndpointSweep(ctx, bus);
-  }
-
-  if (report.ok) {
-    bus.pushStreamEvent("testfix", {
-      type: "phase_ok",
-      phase: "testfix",
-      message: "all sampled endpoints return healthy responses",
-    });
-  } else if (!allowCopilot) {
-    bus.pushStreamEvent("testfix", {
-      type: "phase_fail",
-      phase: "testfix",
-      message: `${report.issues.length} endpoint issue${report.issues.length === 1 ? "" : "s"} found (copilot disabled)`,
-    });
-  } else {
-    bus.pushStreamEvent("testfix", {
-      type: "phase_fail",
-      phase: "testfix",
-      message: `${report.issues.length} endpoint issue${report.issues.length === 1 ? "" : "s"} remain after ${iter} pass${iter === 1 ? "" : "es"}`,
-    });
-  }
-
-  return report;
-}
-
-async function runEndpointSweep(ctx: MigrationContext, bus: UiBus): Promise<EndpointTestReport> {
   const endpoints = await gatherEndpoints(ctx);
   const issues: EndpointIssue[] = [];
-  const wpUrl = ctx.wpUrl!;
+  const wpUrl = ctx.wpUrl;
 
   bus.pushStreamEvent("testfix", {
     type: "info",
@@ -177,4 +103,3 @@ async function fetchWithTimeout(
     clearTimeout(timer);
   }
 }
-

@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { PhaseId, PhaseStatus, StreamEvent } from "../types.js";
+import type { PhaseId, PhaseStatus, StreamEvent, LoopStatusEvent } from "../types.js";
 
 export interface PhaseSnapshot {
   id: PhaseId;
@@ -27,6 +27,8 @@ export interface LogEntry {
   phase?: PhaseId;
   kind: LogEntryKind;
   text: string;
+  /** Incremental delta for the current emit (headless writes this directly). */
+  delta?: string;
 }
 
 export interface EtaUpdate {
@@ -35,12 +37,6 @@ export interface EtaUpdate {
   active?: PhaseId;
 }
 
-/**
- * Emitted via `bus.emit("summary", MigrationSummary)` right before the
- * final `done` event on a successful migration. Both the TUI footer and
- * the headless logger render it as the migration's end card so the user
- * always walks away knowing the URL + admin credentials.
- */
 export interface MigrationSummary {
   siteUrl: string;
   adminUrl: string;
@@ -50,153 +46,21 @@ export interface MigrationSummary {
   durationSeconds: number;
 }
 
-export interface PromptRequest {
-  id: string;
-  title: string;
-  kind: "confirm" | "text" | "select";
-  message: string;
-  options?: Array<{ label: string; value: string }>;
-  default?: string;
-}
-
-export interface PromptResponse {
-  id: string;
-  value: string;
-}
-
-type PendingKind = "assistant" | "reasoning";
-
-interface LiveStream {
-  id: number;
-  phase: PhaseId | undefined;
-  kind: PendingKind;
-  text: string;
-  ts: number;
-}
+type StreamKind = "assistant" | "reasoning";
 
 /**
- * Maximum characters one live entry is allowed to grow before it "wraps"
- * into a fresh entry. Keeps any single rendered paragraph from becoming
- * arbitrarily large. 4 KB covers a few hundred words which is plenty of
- * live context — anything older scrolls off naturally.
+ * Maximum characters a single live entry can grow before we start a
+ * fresh one. Keeps rendering cheap in the TUI.
  */
 const LIVE_WRAP_CHARS = 4000;
 
-/**
- * Copilot streams assistant/reasoning output as small deltas. Many wire
- * formats prepend a leading space before each token, so we get `"WORD"` +
- * `" PRESS"` → `"WORD PRESS"` instead of `WORDPRESS`. Drop that spacer
- * only when it clearly splits a single technical token (CONSTANT_CASE,
- * snake_case, hyphenated compounds, `I'm`, markdown `**`).
- */
-export function normalizeStreamDelta(bufferSoFar: string, incoming: string): string {
-  if (!incoming || bufferSoFar.length === 0) return incoming;
-  if (!/^\s/.test(incoming)) return incoming;
-  const trimmed = incoming.replace(/^\s+/, "");
-  if (!trimmed.length) return incoming;
-  if (!shouldDropLeadingSpaceBetween(bufferSoFar, trimmed)) return incoming;
-  return trimmed;
-}
-
-function shouldDropLeadingSpaceBetween(buf: string, chunkNoLeadSpace: string): boolean {
-  const last = buf[buf.length - 1];
-  const first = chunkNoLeadSpace[0];
-  if (!last || !first) return false;
-
-  // `built` + `-in` → built-in
-  if (/[A-Za-z0-9]/.test(last) && first === "-") return true;
-  // `I` + `'m` / `'` + `m`
-  if (/[A-Za-z]/.test(last) && (first === "'" || first === "’")) return true;
-
-  const lw = lastToken(buf);
-  const fw = firstToken(chunkNoLeadSpace);
-  if (!lw || !fw) return false;
-
-  // `**` bold delimiter split across deltas
-  if (lw.endsWith("*") && fw.startsWith("*")) return true;
-
-  // `WORD` + `PRESS` → WORDPRESS (avoid merging `THE` + `QUICK`)
-  if (/^[A-Z][A-Z0-9_]*$/.test(lw) && /^[A-Z0-9_]+$/.test(fw)) {
-    const stop = new Set([
-      "THE",
-      "A",
-      "AN",
-      "TO",
-      "OF",
-      "IN",
-      "ON",
-      "AT",
-      "IS",
-      "IT",
-      "BE",
-      "AS",
-      "OR",
-      "BY",
-      "WE",
-      "US",
-      "DO",
-      "NO",
-      "IF",
-      "SO",
-      "MY",
-      "ME",
-      "UP",
-      "HE",
-      "HI",
-    ]);
-    if (!stop.has(lw) && !stop.has(fw)) return true;
-  }
-
-  // snake_case / path: `foo` + `_bar` or `WORD` + `_PRESS`
-  if (first === "_" && /[A-Za-z0-9]$/.test(last)) return true;
-  if (lw.includes("_") && /^[A-Za-z0-9_]+$/.test(fw)) return true;
-
-  return false;
-}
-
-function lastToken(buf: string): string | undefined {
-  const m = /([A-Za-z0-9_*][A-Za-z0-9._$#/*-]*)$/.exec(buf);
-  return m?.[1];
-}
-
-function firstToken(chunk: string): string | undefined {
-  const m = /^([A-Za-z0-9_*][A-Za-z0-9._$#/*-]*)/.exec(chunk);
-  return m?.[1];
-}
-
 export class UiBus extends EventEmitter {
   private logId = 0;
-  /**
-   * The currently live stream entry (if any). While a stream is active
-   * the same LogEntry is re-emitted on every delta; the TUI replaces the
-   * entry with the same id in-place so users see one continuously
-   * growing line instead of a ladder of one-word rows.
-   */
-  private live: LiveStream | null = null;
-  /**
-   * When a tool call interrupts the live stream we start a fresh `live`
-   * entry; the next token delta may still belong to the same English word
-   * or identifier as the tail of the previous stream (`WORD` + ` PRESS`).
-   * Keep a short suffix of the last emitted live text so
-   * {@link normalizeStreamDelta} can still decide whether to drop a
-   * spurious leading space on the first chunk of the new stream.
-   */
-  private streamGlueSuffix = "";
-  /**
-   * Ring buffer of the last few hundred user-facing log lines. Used by
-   * the per-phase repair flow so Copilot gets a tail of the run's
-   * actual output when it's asked to diagnose a failure (the error
-   * message on its own rarely tells the whole story).
-   */
+  /** The active streaming entry, or null between streams. */
+  private live: { id: number; phase: PhaseId | undefined; kind: StreamKind; text: string; ts: number } | null = null;
   private tail: Array<{ ts: number; phase: PhaseId | undefined; kind: string; text: string }> = [];
   private readonly TAIL_MAX = 400;
-  autoAnswer = false;
 
-  /**
-   * Return the most recent {@link UiBus.TAIL_MAX} (or `n`, whichever is
-   * smaller) log lines, optionally filtered by phase. Each line is
-   * prefixed with its kind so a repair prompt reads like a log file.
-   */
   recentLogs(n = 120, phase?: PhaseId): string {
     const src = phase ? this.tail.filter((t) => t.phase === phase) : this.tail;
     return src
@@ -208,14 +72,10 @@ export class UiBus extends EventEmitter {
   pushStreamEvent(phase: PhaseId | undefined, ev: StreamEvent): void {
     this.emit("stream", phase, ev);
 
-    // Copilot streams `message` and `reasoning` in sub-word deltas. Emit
-    // them as updates to a single "live" LogEntry rather than separate
-    // rows — that's the only way to avoid the ragged
-    // "The / mirrored / theme / already / has" one-word ladder.
     if (ev.type === "message" || ev.type === "reasoning") {
       const raw = ev.text ?? "";
       if (!raw) return;
-      const kind: PendingKind = ev.type === "message" ? "assistant" : "reasoning";
+      const kind: StreamKind = ev.type === "message" ? "assistant" : "reasoning";
 
       const sameStream =
         this.live !== null &&
@@ -223,18 +83,6 @@ export class UiBus extends EventEmitter {
         this.live.phase === phase;
 
       if (!sameStream) {
-        // Carry a short tail across stream breaks inside the same phase/kind
-        // (e.g. wrap split, or a new live id after a tool call — in the
-        // latter case `live` is already null and glue was stashed when the
-        // tool event cleared the previous stream).
-        if (this.live && this.live.phase === phase && this.live.kind === kind && this.live.text.length > 0) {
-          this.streamGlueSuffix = this.live.text.slice(-96);
-        } else if (this.live) {
-          this.streamGlueSuffix = "";
-        }
-        // Finalize the previous live stream (just drop the reference —
-        // it's already been emitted; nothing more to do) and begin a new
-        // one with a fresh id.
         this.live = {
           id: ++this.logId,
           phase,
@@ -244,16 +92,10 @@ export class UiBus extends EventEmitter {
         };
       }
 
-      const buf = this.live!.text.length > 0 ? this.live!.text : this.streamGlueSuffix;
-      const text = normalizeStreamDelta(buf, raw);
-      this.live!.text += text;
-      if (this.live!.text.length > 0) this.streamGlueSuffix = "";
+      this.live!.text += raw;
 
-      // Append delta. If the live entry grows past the wrap limit, start
-      // a new one so pane rendering stays cheap.
       if (this.live!.text.length > LIVE_WRAP_CHARS) {
-        this.streamGlueSuffix = this.live!.text.slice(-96);
-        this.emitLive();
+        this.emitLive(raw);
         this.live = {
           id: ++this.logId,
           phase,
@@ -262,17 +104,12 @@ export class UiBus extends EventEmitter {
           ts: Date.now(),
         };
       } else {
-        this.emitLive();
+        this.emitLive(raw);
       }
       return;
     }
 
-    // Any non-stream event finalizes the live stream so subsequent
-    // events (tool calls, info lines, phase changes) sit below it.
-    if (ev.type === "phase_start") this.streamGlueSuffix = "";
-    if (this.live !== null && this.live.text.length > 0) {
-      this.streamGlueSuffix = this.live.text.slice(-96);
-    }
+    // Non-streaming event — finalize the live stream
     this.live = null;
 
     const entry = this.streamToLog(phase, ev);
@@ -284,38 +121,27 @@ export class UiBus extends EventEmitter {
     if (ev.type === "phase_start") this.emit("phase", phase, "running", ev.message);
     if (ev.type === "phase_ok") this.emit("phase", phase, "ok", ev.message);
     if (ev.type === "phase_fail") this.emit("phase", phase, "fail", ev.message);
+    if (ev.type === "loop_status") {
+      this.emit("loop_status", ev as LoopStatusEvent);
+    }
   }
 
-  private emitLive(): void {
+  private emitLive(delta: string): void {
     const p = this.live;
-    if (!p) return;
-    // Normalize whitespace for display: collapse runs of spaces/tabs,
-    // compress 3+ newlines to paragraph breaks, and strip horizontal
-    // whitespace around newlines. Do NOT trim the ends — the TUI wraps
-    // & tails, and trimming would jitter the rendered viewport every
-    // tick. `text.trim()` is only used to detect an "empty so far" case.
-    const display = p.text
-      .replace(/[ \t]+/g, " ")
-      // Streaming often yields `word` + ` .` — collapse that gap.
-      .replace(/([A-Za-z0-9])\s+([.,;:!?])(?=\s|$)/g, "$1$2")
-      .replace(/\n{3,}/g, "\n\n")
-      .replace(/[ \t]*\n[ \t]*/g, "\n");
-    if (!display.trim()) return;
+    if (!p || !p.text.trim()) return;
     this.emit("log", {
       id: p.id,
       ts: p.ts,
       phase: p.phase,
       kind: p.kind,
-      text: display,
+      text: p.text,
+      delta,
     } satisfies LogEntry);
   }
 
   private streamToLog(phase: PhaseId | undefined, ev: StreamEvent): LogEntry | undefined {
     const base = { id: ++this.logId, ts: Date.now(), phase };
     switch (ev.type) {
-      // `message` and `reasoning` are coalesced in pushStreamEvent and never
-      // reach this switch. We list them here only to keep the discriminated
-      // union exhaustive for TypeScript.
       case "message":
       case "reasoning":
         return undefined;
@@ -338,30 +164,13 @@ export class UiBus extends EventEmitter {
         return { ...base, kind: "info", text: ev.message ?? ev.type };
       case "warn":
         return { ...base, kind: "warn", text: ev.message ?? "warning" };
+      case "stdout":
+        return { ...base, kind: "raw", text: (ev as { line: string }).line ?? "" };
+      case "loop_status":
+        return undefined;
       default:
         return undefined;
     }
-  }
-
-  askPrompt(req: PromptRequest): Promise<string> {
-    if (this.autoAnswer) {
-      const fallback = req.default ?? req.options?.[0]?.value ?? "";
-      return Promise.resolve(fallback);
-    }
-    return new Promise((resolve) => {
-      const listener = (res: PromptResponse) => {
-        if (res.id === req.id) {
-          this.off("prompt:response", listener);
-          resolve(res.value);
-        }
-      };
-      this.on("prompt:response", listener);
-      this.emit("prompt:request", req);
-    });
-  }
-
-  answerPrompt(res: PromptResponse): void {
-    this.emit("prompt:response", res);
   }
 }
 
@@ -376,10 +185,6 @@ function safeStringify(v: unknown, max = 240): string {
   }
 }
 
-/**
- * Turn a Copilot tool_use event into a one-line human-readable summary so
- * the Activity pane shows "edit src/foo.ts" instead of dumping raw JSON.
- */
 function describeTool(name: string, rawInput: unknown): string {
   const input = (rawInput && typeof rawInput === "object" ? rawInput : {}) as Record<string, unknown>;
   const lower = name.toLowerCase();
@@ -387,52 +192,42 @@ function describeTool(name: string, rawInput: unknown): string {
     const v = input[k];
     return typeof v === "string" ? v : undefined;
   };
-  // File read / view
   if (/read|view/.test(lower)) {
     const p = str("path") ?? str("file") ?? str("filepath") ?? str("target_file");
     return p ? `read ${shortPath(p)}` : name;
   }
-  // File write / create
   if (/write|create/.test(lower)) {
     const p = str("path") ?? str("file") ?? str("target_file");
     return p ? `write ${shortPath(p)}` : name;
   }
-  // File edit / str-replace
   if (/edit|strreplace|str_replace|patch/.test(lower)) {
     const p = str("path") ?? str("target_file") ?? str("file");
     return p ? `edit ${shortPath(p)}` : name;
   }
-  // Delete
   if (/delete|remove/.test(lower)) {
     const p = str("path") ?? str("target_file") ?? str("file");
     return p ? `delete ${shortPath(p)}` : name;
   }
-  // Shell / bash / run
   if (/shell|bash|run|exec|terminal/.test(lower)) {
     const cmd = str("command") ?? str("cmd") ?? str("script") ?? str("input");
     return cmd ? `$ ${singleLine(cmd, 180)}` : name;
   }
-  // Grep / search
   if (/grep|search/.test(lower)) {
     const pat = str("pattern") ?? str("query") ?? str("q");
     const path = str("path") ?? str("target_directory");
     return pat ? `grep ${truncate(pat, 60)}${path ? " in " + shortPath(path) : ""}` : name;
   }
-  // Glob / find
   if (/glob|find|list/.test(lower)) {
     const p = str("glob_pattern") ?? str("pattern") ?? str("path") ?? str("target_directory");
     return p ? `${name.toLowerCase()} ${shortPath(p)}` : name;
   }
-  // Fetch / web
   if (/fetch|web|http|curl/.test(lower)) {
     const url = str("url") ?? str("href");
     return url ? `fetch ${truncate(url, 120)}` : name;
   }
-  // Think / plan
   if (/think|plan|todo/.test(lower)) {
     return name;
   }
-  // Fallback: name + compact args
   const compact = safeStringify(rawInput, 120);
   return compact ? `${name} ${compact}` : name;
 }
@@ -458,7 +253,6 @@ function describeToolResult(name: string | undefined, output: unknown, isError?:
 
 function shortPath(p: string): string {
   if (!p) return p;
-  // Strip a leading absolute workspace-style prefix so paths fit on one line.
   const m = p.match(/^\/Users\/[^/]+\/[^/]+\/(.+)$/);
   if (m) return m[1];
   if (p.length > 80) {
@@ -477,13 +271,6 @@ function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max) + "…" : s;
 }
 
-/**
- * Poetic phase titles. WordPress's tagline is "Code is Poetry" — so the tool
- * narrates each phase as a step in writing and binding a book of verse.
- * The backing `phase` id stays machine-friendly (`detect`, `plan`, …) for
- * commits, state files, and CLI args; these titles are for humans reading
- * the TUI.
- */
 export const PHASE_TITLES: Record<PhaseId, string> = {
   detect: "Listening for the muse",
   plan: "Sketching the stanzas",
@@ -497,7 +284,6 @@ export const PHASE_TITLES: Record<PhaseId, string> = {
   testfix: "Road-testing every page",
 };
 
-/** One-word verbs for compact spots (e.g. git commit messages if ever surfaced). */
 export const PHASE_VERBS: Record<PhaseId, string> = {
   detect: "listen",
   plan: "sketch",

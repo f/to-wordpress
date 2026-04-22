@@ -176,6 +176,22 @@ export interface MigrationFlags {
   fresh?: boolean;
 }
 
+/**
+ * CLI-provided overrides for plan-phase decisions. Every field has a
+ * sensible auto-detected default so nothing is ever interactive.
+ */
+export interface PlanOverrides {
+  permalinks?: "keep" | "default";
+  cpts?: "all" | "none";
+  redirects?: boolean;
+  frontPage?: string;
+  blogIndex?: string;
+  privacyPage?: string;
+  adminUser?: string;
+  adminPassword?: string;
+  adminEmail?: string;
+}
+
 export interface MigrationContext {
   sourceDir: string;
   workDir: string;
@@ -190,6 +206,7 @@ export interface MigrationContext {
   copilotSessionId?: string;
   wpUrl?: string;
   flags: MigrationFlags;
+  planOverrides?: PlanOverrides;
   /**
    * Set of unknown Liquid shortcode names ({@link normalize.ts}) encountered
    * during normalization. The plugin phase reads this to generate matching
@@ -210,12 +227,24 @@ export type CopilotEvent =
   | { type: "session"; sessionId: string }
   | { type: "done"; exitCode: number };
 
+export type LoopStage = "attempting" | "testing" | "fixing" | "repairing";
+
 export interface PhaseEvent {
   type: "phase_start" | "phase_ok" | "phase_fail" | "info" | "warn";
   phase: PhaseId;
   message?: string;
 }
 
-export type StreamEvent = CopilotEvent | PhaseEvent;
+export interface LoopStatusEvent {
+  type: "loop_status";
+  phase: PhaseId;
+  attempt: number;
+  maxAttempts: number;
+  fixPass: number;
+  maxFixPasses: number;
+  stage: LoopStage;
+}
+
+export type StreamEvent = CopilotEvent | PhaseEvent | LoopStatusEvent;
 
 export type ZodSchema<T> = z.ZodType<T>;

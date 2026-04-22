@@ -8,16 +8,6 @@ import { App } from "./tui/App.js";
 import { UiBus, PHASE_TITLES } from "./tui/bus.js";
 import { attachHeadlessLogger } from "./tui/headless.js";
 import type { MigrationContext, PhaseId } from "./types.js";
-import { runDetect } from "./phases/detect.js";
-import { runPlan } from "./phases/plan.js";
-import { runBoot } from "./phases/boot.js";
-import { runTheme } from "./phases/theme.js";
-import { runPlugin } from "./phases/plugin.js";
-import { runNormalize } from "./phases/normalize.js";
-import { runImport } from "./phases/import.js";
-import { runVerify } from "./phases/verify.js";
-import { runFixLoop } from "./phases/fix.js";
-import { runTestFixLoop } from "./phases/testfix.js";
 import {
   applyContextToDoc,
   loadMigrationDoc,
@@ -26,13 +16,24 @@ import {
   type MigrationDoc,
 } from "./state/migration.js";
 import { runFresh } from "./phases/fresh.js";
-import { runRepair } from "./phases/repair.js";
-import { commitPhase, setupGit } from "./phases/git.js";
+import { setupGit } from "./phases/git.js";
 import { computeEta } from "./phases/eta.js";
 import { DEFAULT_COPILOT_MODEL, DEFAULT_COPILOT_EFFORT } from "./copilot/run.js";
+import { runAgenticLoop, type FailStrategy } from "./phases/loop.js";
+import {
+  detectLoop,
+  planLoop,
+  bootLoop,
+  themeLoop,
+  pluginLoop,
+  normalizeLoop,
+  importLoop,
+  verifyLoop,
+  testfixLoop,
+} from "./phases/loops.js";
 import type { PhaseStatus } from "./types.js";
 
-const PACKAGE_VERSION = "0.3.2";
+const PACKAGE_VERSION = "0.4.0";
 
 interface CliOptions {
   skipBoot?: boolean;
@@ -40,11 +41,22 @@ interface CliOptions {
   only?: string;
   from?: PhaseId;
   until?: PhaseId;
-  maxFixIterations?: number;
+  maxAttempts?: number;
+  maxFixPasses?: number;
+  failStrategy?: FailStrategy;
   yes?: boolean;
   fresh?: boolean;
   branch?: string;
   git?: boolean;
+  permalinks?: "keep" | "default";
+  cpts?: "all" | "none";
+  redirects?: boolean;
+  frontPage?: string;
+  blogIndex?: string;
+  privacyPage?: string;
+  adminUser?: string;
+  adminPassword?: string;
+  adminEmail?: string;
 }
 
 const PHASE_ORDER: PhaseId[] = [
@@ -56,7 +68,6 @@ const PHASE_ORDER: PhaseId[] = [
   "normalize",
   "import",
   "verify",
-  "fix",
   "testfix",
 ];
 
@@ -72,11 +83,22 @@ async function main(): Promise<void> {
     .option("--no-git", "disable automatic git init / branching / per-phase commits")
     .option("--skip-boot", "skip wp-env start (assumes already running)")
     .option("--skip-copilot", "use deterministic fallbacks only, don't invoke copilot")
-    .option("-y, --yes", "auto-answer all user prompts with defaults (non-interactive)")
-    .option("--only <phase>", "run only this phase (skips all others; not recommended across invocations)")
+    .option("-y, --yes", "headless mode (no TUI, log to stdout)")
+    .option("--only <phase>", "run only this phase (skips all others)")
     .option("--from <phase>", "start from this phase (skip earlier ones)")
     .option("--until <phase>", "stop after this phase (skip later ones)")
-    .option("--max-fix-iterations <n>", "max Verify→Fix iterations", (v) => Number(v), 3)
+    .option("--max-attempts <n>", "max crash-retry attempts per phase", (v) => Number(v), 3)
+    .option("--max-fix-passes <n>", "max test-fail-fix iterations per phase", (v) => Number(v), 3)
+    .option("--fail-strategy <strategy>", "what to do when a phase exhausts retries: abort|skip|continue", "continue")
+    .option("--permalinks <mode>", "permalink mapping: keep (mirror source URLs) or default (/%postname%/)", "keep")
+    .option("--cpts <mode>", "custom post types: all (create CPT per collection) or none (import as posts)", "all")
+    .option("--no-redirects", "skip generating redirects.json for changed URL shapes")
+    .option("--front-page <slug>", "slug of the page to use as static front page (auto-detected if omitted)")
+    .option("--blog-index <slug>", "slug of the page to use as blog index (auto-detected if omitted)")
+    .option("--privacy-page <slug>", "slug of the privacy policy page (auto-detected if omitted)")
+    .option("--admin-user <name>", "WordPress admin username", "admin")
+    .option("--admin-password <pass>", "WordPress admin password", "password")
+    .option("--admin-email <email>", "WordPress admin email", "admin@example.com")
     .parse(process.argv);
 
   const opts = program.opts<CliOptions>();
@@ -99,6 +121,17 @@ async function main(): Promise<void> {
       yes: Boolean(opts.yes),
       fresh: Boolean(opts.fresh),
     },
+    planOverrides: {
+      permalinks: opts.permalinks as "keep" | "default" | undefined,
+      cpts: opts.cpts as "all" | "none" | undefined,
+      redirects: opts.redirects,
+      frontPage: opts.frontPage,
+      blogIndex: opts.blogIndex,
+      privacyPage: opts.privacyPage,
+      adminUser: opts.adminUser,
+      adminPassword: opts.adminPassword,
+      adminEmail: opts.adminEmail,
+    },
   };
 
   await mkdir(workDir, { recursive: true });
@@ -106,7 +139,6 @@ async function main(): Promise<void> {
   await mkdir(ctx.pluginDir, { recursive: true });
 
   const bus = new UiBus();
-  bus.autoAnswer = Boolean(opts.yes);
   const startedAt = Date.now();
 
   const isTty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
@@ -151,9 +183,8 @@ async function main(): Promise<void> {
   }
 
   const gitEnabled = opts.git !== false;
+  const failStrategy = (opts.failStrategy ?? "continue") as FailStrategy;
 
-  // Announce which Copilot model will do the creative work. Users asked to
-  // see this up front so surprises about quality/latency are off the table.
   if (!opts.skipCopilot) {
     bus.pushStreamEvent(undefined, {
       type: "info",
@@ -161,6 +192,14 @@ async function main(): Promise<void> {
       message: `Copilot model: ${DEFAULT_COPILOT_MODEL} · effort: ${DEFAULT_COPILOT_EFFORT} (override with --model / COPILOT_MODEL, --effort / COPILOT_EFFORT)`,
     });
   }
+
+  const loopOpts = {
+    maxAttempts: opts.maxAttempts ?? 3,
+    maxFixPasses: opts.maxFixPasses ?? 3,
+    failStrategy,
+    gitEnabled,
+    skipCopilot: Boolean(opts.skipCopilot),
+  };
 
   let exitCode = 0;
   try {
@@ -176,9 +215,6 @@ async function main(): Promise<void> {
     if (doc.detected) ctx.detected = doc.detected;
     if (doc.choices) ctx.choices = doc.choices;
     if (doc.copilotSessionId) ctx.copilotSessionId = doc.copilotSessionId;
-    // A phase marked "running" means a prior invocation died mid-phase
-    // (Ctrl-C, crash, etc.). Reset those to "pending" so resume mode
-    // re-runs them instead of treating them as complete or blocking.
     for (const id of Object.keys(doc.phases) as PhaseId[]) {
       if (doc.phases[id].status === "running") {
         doc.phases[id].status = "pending";
@@ -187,11 +223,6 @@ async function main(): Promise<void> {
     }
     await hydrateWpUrl(ctx);
 
-    // If the user explicitly re-targeted phases via --from/--only/--until
-    // we honor those exactly. Otherwise, auto-resume: any phase already
-    // marked "ok" in WORDPRESS_MIGRATION.md is skipped so we pick up
-    // where the last run left off instead of redoing detection,
-    // theme/plugin generation, normalization, etc.
     const explicitRange = Boolean(opts.from || opts.only || opts.until);
     const resumeMode = !explicitRange && !opts.fresh;
     if (resumeMode) {
@@ -208,57 +239,37 @@ async function main(): Promise<void> {
     }
 
     const step = async <T,>(
-      phase: PhaseId,
-      condition: boolean,
-      run: () => Promise<T>,
+      loop: import("./phases/loop.js").PhaseLoop<T>,
     ): Promise<T | undefined> => {
-      if (!condition || !filter(phase)) return undefined;
-      if (resumeMode && doc.phases[phase]?.status === "ok") {
+      if (!filter(loop.phase)) return undefined;
+      if (resumeMode && doc.phases[loop.phase]?.status === "ok") {
         bus.pushStreamEvent(undefined, {
           type: "info",
-          phase,
-          message: `${PHASE_TITLES[phase]}: already complete, skipping (resume)`,
+          phase: loop.phase,
+          message: `${PHASE_TITLES[loop.phase]}: already complete, skipping (resume)`,
         });
         return undefined;
       }
-      return runPhaseStep(ctx, bus, doc, phase, gitEnabled, run);
+      return runAgenticLoop(ctx, bus, doc, loop, loopOpts);
     };
 
-    await step("detect", true, async () => {
-      ctx.detected = await runDetect(ctx, bus);
-    });
-    await step("plan", true, async () => {
-      ctx.choices = await runPlan(ctx, bus);
-    });
-    await step("boot", !opts.skipBoot, async () => {
-      await runBoot(ctx, bus);
-    });
-    await step("theme", !opts.skipCopilot, async () => {
-      await runTheme(ctx, bus);
-    });
-    await step("plugin", !opts.skipCopilot, async () => {
-      await runPlugin(ctx, bus);
-    });
-    await step("normalize", true, async () => {
-      await runNormalize(ctx, bus);
-    });
-    await step("import", true, async () => {
-      await runImport(ctx, bus);
-    });
-    const report = await step("verify", true, async () => runVerify(ctx, bus));
-    if (report && !report.ok && !opts.skipCopilot) {
-      const final = await step("fix", true, async () =>
-        runFixLoop(ctx, bus, report, { maxIterations: opts.maxFixIterations }),
-      );
-      if (final && !final.ok) exitCode = 2;
+    await step(detectLoop(ctx, bus));
+    await step(planLoop(ctx, bus));
+    await step(bootLoop(ctx, bus, Boolean(opts.skipBoot)));
+    await step(themeLoop(ctx, bus, Boolean(opts.skipCopilot)));
+    await step(pluginLoop(ctx, bus, Boolean(opts.skipCopilot)));
+    await step(normalizeLoop(ctx, bus));
+    await step(importLoop(ctx, bus));
+    await step(verifyLoop(ctx, bus));
+    await step(testfixLoop(ctx, bus, Boolean(opts.skipBoot)));
+
+    // Check if any phase ended in fail
+    for (const id of PHASE_ORDER) {
+      if (doc.phases[id]?.status === "fail") {
+        exitCode = 2;
+        break;
+      }
     }
-    const endpointReport = await step("testfix", !opts.skipBoot, async () =>
-      runTestFixLoop(ctx, bus, {
-        maxIterations: opts.maxFixIterations,
-        allowCopilot: !opts.skipCopilot,
-      }),
-    );
-    if (endpointReport && !endpointReport.ok) exitCode = 2;
   } catch (err) {
     bus.pushStreamEvent(undefined, { type: "error", message: (err as Error).message });
     exitCode = 1;
@@ -284,7 +295,7 @@ async function main(): Promise<void> {
       "────────────────────────────────────────────────────",
       "  Tip: `npx wp-env stop` pauses the stack; `npx wp-env start` resumes.",
     ]) {
-      bus.pushStreamEvent(undefined, { type: "info", phase: "fix", message: line });
+      bus.pushStreamEvent(undefined, { type: "info", phase: "verify", message: line });
     }
 
     bus.emit("summary", {
@@ -304,128 +315,6 @@ async function main(): Promise<void> {
   }
 }
 
-/**
- * Run a single phase with retry/skip/abort support. On failure, the user is
- * prompted to retry (re-run the phase), skip (mark as failed and continue),
- * or abort (throw). Under `--yes` a failure aborts immediately.
- *
- * On success (or skip) we stage + commit whatever the phase wrote to the
- * source tree under the `to-wordpress` branch so each phase is a standalone
- * checkpoint you can `git diff` against the previous one.
- */
-async function runPhaseStep<T>(
-  ctx: MigrationContext,
-  bus: UiBus,
-  doc: MigrationDoc,
-  phase: PhaseId,
-  gitEnabled: boolean,
-  run: () => Promise<T>,
-): Promise<T | undefined> {
-  let attempt = 0;
-  while (true) {
-    attempt++;
-    try {
-      markPhase(doc, phase, "running");
-      await saveAndApply(ctx, doc, `started ${phase}`, bus);
-      const result = await run();
-      markPhase(doc, phase, "ok");
-      await saveAndApply(ctx, doc, `finished ${phase}`, bus);
-      if (gitEnabled) await commitPhase(ctx, phase, bus, { active: true });
-      return result;
-    } catch (err) {
-      const msg = (err as Error).message ?? String(err);
-      bus.pushStreamEvent(undefined, {
-        type: "error",
-        message: `${PHASE_TITLES[phase]} failed (attempt ${attempt}): ${msg}`,
-      });
-      markPhase(doc, phase, "fail", msg);
-      await saveAndApply(ctx, doc, `failed ${phase}`, bus);
-
-      if (ctx.flags.yes) throw err;
-
-      const ans = await bus.askPrompt({
-        id: `phase-fail-${phase}-${attempt}`,
-        title: `${PHASE_TITLES[phase]} failed`,
-        kind: "select",
-        message: `Attempt ${attempt} error: ${truncate(msg, 200)}. What do you want to do?`,
-        options: [
-          { label: "Retry (ask Copilot to diagnose & patch first)", value: "retry" },
-          { label: "Retry without Copilot repair", value: "retry-plain" },
-          { label: "Skip and continue", value: "skip" },
-          { label: "Abort migration", value: "abort" },
-        ],
-        default: "retry",
-      });
-      if (ans === "retry") {
-        // Hand the failure to Copilot with the repair prompt so it can
-        // make a surgical fix before the outer loop re-runs the phase.
-        // If Copilot itself errors out we still retry — worst case the
-        // user sees the same failure again and can pick "skip" / "abort".
-        if (!ctx.flags.skipCopilot) {
-          await runRepair(ctx, bus, { phase, error: msg, attempt });
-        } else {
-          bus.pushStreamEvent(undefined, {
-            type: "info",
-            phase,
-            message: `retrying ${phase}… (copilot disabled by --skip-copilot)`,
-          });
-        }
-        continue;
-      }
-      if (ans === "retry-plain") {
-        bus.pushStreamEvent(undefined, { type: "info", phase, message: `retrying ${phase}…` });
-        continue;
-      }
-      if (ans === "skip") {
-        markPhase(doc, phase, "skipped", `user skipped after ${attempt} attempt${attempt === 1 ? "" : "s"}`);
-        // Persist the skip decision BEFORE the next phase starts so a
-        // subsequent crash (or Ctrl-C) still reflects the correct state.
-        try {
-          await saveAndApply(ctx, doc, `skipped ${phase}`, bus);
-        } catch (saveErr) {
-          bus.pushStreamEvent(undefined, {
-            type: "warn",
-            phase,
-            message: `could not save state after skipping ${phase}: ${(saveErr as Error).message}`,
-          });
-        }
-        if (gitEnabled) {
-          try {
-            await commitPhase(ctx, `${phase} (skipped)`, bus, { active: true });
-          } catch (gitErr) {
-            bus.pushStreamEvent(undefined, {
-              type: "warn",
-              phase,
-              message: `git commit after skip failed: ${(gitErr as Error).message} — continuing`,
-            });
-          }
-        }
-        bus.pushStreamEvent(undefined, {
-          type: "info",
-          phase,
-          message: `${PHASE_TITLES[phase]} skipped — continuing with the next phase`,
-        });
-        return undefined;
-      }
-      if (ans === "abort") {
-        bus.pushStreamEvent(undefined, {
-          type: "info",
-          phase,
-          message: `${PHASE_TITLES[phase]} aborted by user`,
-        });
-        throw err;
-      }
-      // Unknown response (e.g. prompt torn down by shutdown) — treat as abort.
-      throw err;
-    }
-  }
-}
-
-function truncate(s: string, n: number): string {
-  const flat = s.replace(/\s+/g, " ").trim();
-  return flat.length > n ? flat.slice(0, n) + "…" : flat;
-}
-
 async function hydrateWpUrl(ctx: MigrationContext): Promise<void> {
   if (ctx.wpUrl) return;
   if (!existsSync(ctx.wpEnvConfigPath)) return;
@@ -434,33 +323,6 @@ async function hydrateWpUrl(ctx: MigrationContext): Promise<void> {
     ctx.wpUrl = `http://localhost:${cfg.port ?? 8888}`;
   } catch {
     ctx.wpUrl = "http://localhost:8888";
-  }
-}
-
-async function saveAndApply(
-  ctx: MigrationContext,
-  doc: MigrationDoc,
-  note: string,
-  bus?: UiBus,
-): Promise<void> {
-  applyContextToDoc(doc, ctx);
-  await saveMigrationDoc(ctx.planPath, doc, [
-    {
-      heading: "Status",
-      body: `${note} at ${new Date().toISOString()}`,
-    },
-  ]);
-  if (bus && ctx.detected) {
-    const statuses: Partial<Record<PhaseId, PhaseStatus>> = {};
-    for (const [id, entry] of Object.entries(doc.phases)) {
-      statuses[id as PhaseId] = entry.status as PhaseStatus;
-    }
-    const snap = computeEta(ctx, statuses);
-    bus.emit("eta", {
-      totalSeconds: snap.totalSeconds,
-      remainingSeconds: snap.remainingSeconds,
-      active: snap.active,
-    });
   }
 }
 

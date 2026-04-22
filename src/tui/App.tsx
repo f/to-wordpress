@@ -1,22 +1,17 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useInput, useStdin, useStdout } from "ink";
 import Spinner from "ink-spinner";
-import SelectInput from "ink-select-input";
-import TextInput from "ink-text-input";
-import type { PhaseId, PhaseStatus } from "../types.js";
+import type { PhaseId, PhaseStatus, LoopStatusEvent } from "../types.js";
 import {
   PHASE_TITLES,
   UiBus,
   type EtaUpdate,
   type LogEntry,
   type MigrationSummary,
-  type PromptRequest,
 } from "./bus.js";
 import { formatDuration } from "../phases/eta.js";
 
-/** WordPress brand blue — used for the headline and accents. */
 const WP_BLUE = "#21759B";
-/** Soft grey for chrome (borders, hints) so content dominates the eye. */
 const CHROME = "#6B7785";
 
 const MIN_COLS = 80;
@@ -35,14 +30,15 @@ interface PhaseRowState {
   message?: string;
 }
 
-/**
- * Top-level dashboard. Built as a fixed-size grid measured against the
- * terminal's current width/height so panes never overflow. Each content pane
- * (Press, Muse) computes a hard line budget for its viewport and renders the
- * tail of the buffer that fits, with a small "N more above" indicator when
- * older rows were clipped. Multi-line log chunks word-wrap inside their
- * column instead of being truncated to one line.
- */
+interface LoopState {
+  phase: PhaseId;
+  attempt: number;
+  maxAttempts: number;
+  fixPass: number;
+  maxFixPasses: number;
+  stage: string;
+}
+
 export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
   const { stdout } = useStdout();
   const { isRawModeSupported } = useStdin();
@@ -61,9 +57,7 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
       });
     };
     stdout.on("resize", onResize);
-    return () => {
-      stdout.off("resize", onResize);
-    };
+    return () => { stdout.off("resize", onResize); };
   }, [stdout]);
 
   const [phases, setPhases] = useState<Record<PhaseId, PhaseRowState>>(() => {
@@ -73,14 +67,13 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
   });
   const logsRef = useRef<LogEntry[]>([]);
   const [logsRev, setLogsRev] = useState(0);
-  const [prompt, setPrompt] = useState<PromptRequest | null>(null);
-  const [textValue, setTextValue] = useState("");
   const [showRaw, setShowRaw] = useState(false);
   const [doneExit, setDoneExit] = useState<number | null>(null);
   const [now, setNow] = useState<number>(Date.now());
   const [startedAt] = useState<number>(Date.now());
   const [eta, setEta] = useState<EtaUpdate | null>(null);
   const [summary, setSummary] = useState<MigrationSummary | null>(null);
+  const [loopState, setLoopState] = useState<LoopState | null>(null);
 
   useInput(
     (input, key) => {
@@ -88,7 +81,6 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
         onExit?.();
         return;
       }
-      if (prompt) return;
       if (input === "r") setShowRaw((v) => !v);
     },
     { isActive: isRawModeSupported },
@@ -100,16 +92,9 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
     return () => clearInterval(iv);
   }, [doneExit]);
 
-  const promptActiveRef = useRef<boolean>(false);
-  useEffect(() => {
-    promptActiveRef.current = prompt !== null;
-    setLogsRev((r) => r + 1);
-  }, [prompt]);
-
   useEffect(() => {
     let flushTimer: NodeJS.Timeout | null = null;
     const scheduleFlush = () => {
-      if (promptActiveRef.current) return;
       if (flushTimer) return;
       flushTimer = setTimeout(() => {
         flushTimer = null;
@@ -118,11 +103,6 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
     };
     const onLog = (entry: LogEntry) => {
       const buf = logsRef.current;
-      // Live-streaming entries (assistant / reasoning deltas) reuse the
-      // same id across every delta so the UI replaces them in place
-      // instead of stacking a new row per token. Scan the recent tail —
-      // a finite window is enough because the bus always replays an
-      // in-flight stream consecutively.
       const windowStart = Math.max(0, buf.length - 8);
       for (let i = buf.length - 1; i >= windowStart; i--) {
         if (buf[i].id === entry.id) {
@@ -138,59 +118,57 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
     const onPhase = (id: PhaseId, status: PhaseStatus, message?: string) => {
       setPhases((prev) => ({ ...prev, [id]: { id, status, message } }));
     };
-    const onPrompt = (req: PromptRequest) => {
-      setPrompt(req);
-      setTextValue(req.default ?? "");
-    };
     const onDone = (exitCode: number) => setDoneExit(exitCode);
     const onEta = (update: EtaUpdate) => setEta(update);
     const onSummary = (s: MigrationSummary) => setSummary(s);
+    const onLoopStatus = (ls: LoopStatusEvent) => {
+      setLoopState({
+        phase: ls.phase,
+        attempt: ls.attempt,
+        maxAttempts: ls.maxAttempts,
+        fixPass: ls.fixPass,
+        maxFixPasses: ls.maxFixPasses,
+        stage: ls.stage,
+      });
+    };
     bus.on("log", onLog);
     bus.on("phase", onPhase);
-    bus.on("prompt:request", onPrompt);
     bus.on("done", onDone);
     bus.on("eta", onEta);
     bus.on("summary", onSummary);
+    bus.on("loop_status", onLoopStatus);
     return () => {
       bus.off("log", onLog);
       bus.off("phase", onPhase);
-      bus.off("prompt:request", onPrompt);
       bus.off("done", onDone);
       bus.off("eta", onEta);
       bus.off("summary", onSummary);
+      bus.off("loop_status", onLoopStatus);
       if (flushTimer) clearTimeout(flushTimer);
     };
   }, [bus]);
 
-  // ─── Layout math ─────────────────────────────────────────────────────
-  // The header takes a fixed number of rows, the footer takes one, and the
-  // prompt (when open) takes up to ~8 rows. Everything else goes to the
-  // three main panes. We pick column widths so Cantos stays readable and
-  // Press + Muse split the remainder evenly.
+  // ─── Layout math ────────────────────────────────────────────────────
   const HEADER_ROWS = 5;
   const FOOTER_ROWS = 3;
-  const PROMPT_ROWS = prompt ? promptRowCount(prompt) : 0;
-  // When we have a summary card to show, reserve 8 rows for it (border +
-  // 6 lines of content + 1 breathing row).
   const SUMMARY_ROWS = summary ? 9 : 0;
   const bodyRows = Math.max(
     6,
-    size.rows - HEADER_ROWS - FOOTER_ROWS - PROMPT_ROWS - SUMMARY_ROWS,
+    size.rows - HEADER_ROWS - FOOTER_ROWS - SUMMARY_ROWS,
   );
 
-  // Each pane renders its content inside a single-line border + 1 char
-  // horizontal padding. That eats 2 rows (top/bottom border) and 2 cols
-  // (left/right border + padding on each side).
   const PANE_CHROME_ROWS = 2;
-  const PANE_CHROME_COLS = 4; // 1 border + 1 pad, ×2
-  const viewportRows = Math.max(3, bodyRows - PANE_CHROME_ROWS - 2); // -2: title + hint
+  const PANE_CHROME_COLS = 4;
 
   const leftWidth = Math.min(34, Math.max(22, Math.floor(size.cols * 0.22)));
-  const remaining = size.cols - leftWidth - 2; // gap between Cantos and Press
-  const centerWidth = Math.max(28, Math.floor(remaining / 2));
-  const rightWidth = Math.max(28, remaining - centerWidth - 1);
-  const centerInner = Math.max(20, centerWidth - PANE_CHROME_COLS);
+  const rightWidth = size.cols - leftWidth - 2;
   const rightInner = Math.max(20, rightWidth - PANE_CHROME_COLS);
+
+  // Press and Muse stack vertically — Press gets 65%, Muse 35%
+  const pressHeight = Math.max(4, Math.floor(bodyRows * 0.65));
+  const museHeight = Math.max(3, bodyRows - pressHeight);
+  const pressViewRows = Math.max(2, pressHeight - PANE_CHROME_ROWS - 2);
+  const museViewRows = Math.max(2, museHeight - PANE_CHROME_ROWS - 1);
 
   // ─── Content selection ──────────────────────────────────────────────
   const pressLogs = useMemo(() => {
@@ -203,35 +181,41 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
   }, [showRaw, logsRev]);
 
   const pressView = useMemo(
-    () => wrapLogs(pressLogs, centerInner, viewportRows),
-    [pressLogs, centerInner, viewportRows],
+    () => wrapLogs(pressLogs, rightInner, pressViewRows),
+    [pressLogs, rightInner, pressViewRows],
   );
 
   const museText = useMemo(() => {
     const tail = logsRef.current.filter((l) => l.kind === "reasoning").slice(-400);
-    const joined = tail.map((l) => l.text).join(" ");
+    const joined = tail.map((l) => l.text).join("");
     return joined
       .split(/\n{2,}/)
-      .map((p) => p.replace(/\s+/g, " ").trim())
+      .map((p) => p.replace(/[ \t]+/g, " ").trim())
       .filter(Boolean);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [logsRev]);
 
   const museView = useMemo(
-    () => wrapMuse(museText, rightInner, viewportRows),
-    [museText, rightInner, viewportRows],
+    () => wrapMuse(museText, rightInner, museViewRows),
+    [museText, rightInner, museViewRows],
   );
 
-  const lastActivityAt =
-    logsRef.current.length > 0 ? logsRef.current[logsRef.current.length - 1].ts : undefined;
   const runningPhase = Object.values(phases).find((p) => p.status === "running") as
     | PhaseRowState
     | undefined;
-  const idleSeconds = lastActivityAt
-    ? Math.max(0, Math.floor((now - lastActivityAt) / 1000))
-    : 0;
-  const showMuseIndicator =
-    doneExit === null && !!runningPhase && idleSeconds >= 3 && prompt === null;
+
+  // Build phase sub-status string from loop state
+  const phaseSubStatus = useMemo(() => {
+    if (!loopState || !runningPhase) return undefined;
+    if (loopState.phase !== runningPhase.id) return undefined;
+    const parts: string[] = [];
+    parts.push(`attempt ${loopState.attempt}/${loopState.maxAttempts}`);
+    if (loopState.fixPass > 0) {
+      parts.push(`fix ${loopState.fixPass}/${loopState.maxFixPasses}`);
+    }
+    parts.push(loopState.stage);
+    return parts.join(" · ");
+  }, [loopState, runningPhase]);
 
   return (
     <Box flexDirection="column" width={size.cols} height={size.rows}>
@@ -250,46 +234,30 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
           phaseOrder={phaseOrder}
           phases={phases}
           activePhase={runningPhase?.id}
+          loopState={loopState}
         />
         <Box width={1} />
-        <PressPane
-          width={centerWidth}
-          height={bodyRows}
-          view={pressView}
-          showRaw={showRaw}
-          museIndicator={
-            showMuseIndicator ? { phase: runningPhase!.id, idleSeconds } : undefined
-          }
-          paused={!!prompt}
-        />
-        <Box width={1} />
-        <MusePane
-          width={rightWidth}
-          height={bodyRows}
-          view={museView}
-          empty={museText.length === 0}
-        />
+        <Box flexDirection="column" width={rightWidth} height={bodyRows}>
+          <PressPane
+            width={rightWidth}
+            height={pressHeight}
+            view={pressView}
+            showRaw={showRaw}
+            phaseSubStatus={phaseSubStatus}
+          />
+          <MusePane
+            width={rightWidth}
+            height={museHeight}
+            view={museView}
+            empty={museText.length === 0}
+          />
+        </Box>
       </Box>
-
-      {prompt ? (
-        <PromptView
-          bus={bus}
-          prompt={prompt}
-          textValue={textValue}
-          setTextValue={setTextValue}
-          width={size.cols}
-          onAnswered={() => {
-            setPrompt(null);
-            setTextValue("");
-          }}
-        />
-      ) : null}
 
       {summary ? <SummaryCard summary={summary} width={size.cols} /> : null}
 
       <Footer
         doneExit={doneExit}
-        promptActive={!!prompt}
         width={size.cols}
       />
     </Box>
@@ -298,12 +266,6 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
 
 // ─── Summary card ──────────────────────────────────────────────────────
 
-/**
- * Printed on a successful finish. Shows the live URL + admin
- * credentials so the user walks away knowing exactly how to log in.
- * Sits just above the Footer so it survives the entire "done" state
- * (the user can copy-paste out of the terminal until they press `q`).
- */
 function SummaryCard({ summary, width }: { summary: MigrationSummary; width: number }) {
   const row = (label: string, value: string, valueColor: string = WP_BLUE) => (
     <Box>
@@ -412,12 +374,14 @@ function CantosPane({
   phaseOrder,
   phases,
   activePhase,
+  loopState,
 }: {
   width: number;
   height: number;
   phaseOrder: PhaseId[];
   phases: Record<PhaseId, PhaseRowState>;
   activePhase?: PhaseId;
+  loopState: LoopState | null;
 }) {
   return (
     <Box
@@ -438,6 +402,10 @@ function CantosPane({
       {phaseOrder.map((id) => {
         const p = phases[id];
         const isActive = id === activePhase;
+        const loopInfo =
+          isActive && loopState && loopState.phase === id
+            ? ` [${loopState.attempt}/${loopState.maxAttempts}]`
+            : "";
         return (
           <Box key={id}>
             <Text color={statusColor(p.status)}>{statusGlyph(p.status)}</Text>
@@ -449,6 +417,11 @@ function CantosPane({
             >
               {PHASE_TITLES[id]}
             </Text>
+            {loopInfo ? (
+              <Text color="cyan" dimColor>
+                {loopInfo}
+              </Text>
+            ) : null}
           </Box>
         );
       })}
@@ -472,15 +445,13 @@ function PressPane({
   height,
   view,
   showRaw,
-  museIndicator,
-  paused,
+  phaseSubStatus,
 }: {
   width: number;
   height: number;
   view: { lines: PressLineRow[]; hiddenAbove: number };
   showRaw: boolean;
-  museIndicator?: { phase: PhaseId; idleSeconds: number };
-  paused: boolean;
+  phaseSubStatus?: string;
 }) {
   return (
     <Box
@@ -497,22 +468,23 @@ function PressPane({
           Press
         </Text>
         <Text color={CHROME}>
-          {paused
-            ? "  · paused (awaiting your answer)"
-            : showRaw
-              ? "  · raw pages on (press r)"
-              : ""}
+          {showRaw ? "  · raw pages on (press r)" : ""}
         </Text>
       </Box>
+      {phaseSubStatus ? (
+        <Text color="cyan" dimColor>
+          {"› "}{phaseSubStatus}
+        </Text>
+      ) : null}
       {view.hiddenAbove > 0 ? (
         <Text color={CHROME}>
           ▲ {view.hiddenAbove} older line{view.hiddenAbove === 1 ? "" : "s"} above
         </Text>
-      ) : (
+      ) : !phaseSubStatus ? (
         <Text color={CHROME}>
           {"─".repeat(Math.max(4, width - 4))}
         </Text>
-      )}
+      ) : null}
       {view.lines.map((row) => (
         <Box key={row.id}>
           {row.continuation ? (
@@ -525,14 +497,6 @@ function PressPane({
       ))}
       {view.lines.length === 0 ? (
         <Text color={CHROME}>(the press is warming)</Text>
-      ) : null}
-      {museIndicator ? (
-        <Box marginTop={0}>
-          <Text color="magenta">
-            <Spinner type="dots" /> muse ponders · quiet {museIndicator.idleSeconds}s in{" "}
-            {museIndicator.phase}
-          </Text>
-        </Box>
       ) : null}
     </Box>
   );
@@ -589,80 +553,13 @@ function MusePane({
   );
 }
 
-// ─── Prompt + Footer ───────────────────────────────────────────────────
-
-function promptRowCount(prompt: PromptRequest): number {
-  // rough upper bound: title + message + options (or input) + padding
-  if (prompt.kind === "select" || prompt.kind === "confirm") {
-    return 4 + Math.min(8, (prompt.options?.length ?? 2));
-  }
-  return 6;
-}
-
-function PromptView({
-  bus,
-  prompt,
-  textValue,
-  setTextValue,
-  width,
-  onAnswered,
-}: {
-  bus: UiBus;
-  prompt: PromptRequest;
-  textValue: string;
-  setTextValue: (v: string) => void;
-  width: number;
-  onAnswered: () => void;
-}) {
-  const handleSelect = (item: { value: string }) => {
-    bus.answerPrompt({ id: prompt.id, value: item.value });
-    onAnswered();
-  };
-  const handleSubmit = (value: string) => {
-    bus.answerPrompt({ id: prompt.id, value });
-    onAnswered();
-  };
-  return (
-    <Box
-      borderStyle="double"
-      borderColor="yellow"
-      paddingX={1}
-      flexDirection="column"
-      width={width}
-      flexShrink={0}
-    >
-      <Text bold color="yellow">
-        ? {prompt.title}
-      </Text>
-      <Text wrap="wrap">{prompt.message}</Text>
-      {prompt.kind === "select" || prompt.kind === "confirm" ? (
-        <SelectInput
-          items={
-            prompt.options ??
-            [
-              { label: "Yes", value: "yes" },
-              { label: "No", value: "no" },
-            ]
-          }
-          onSelect={handleSelect}
-        />
-      ) : (
-        <Box>
-          <Text color="cyan">{"› "}</Text>
-          <TextInput value={textValue} onChange={setTextValue} onSubmit={handleSubmit} />
-        </Box>
-      )}
-    </Box>
-  );
-}
+// ─── Footer ───────────────────────────────────────────────────────────
 
 function Footer({
   doneExit,
-  promptActive,
   width,
 }: {
   doneExit: number | null;
-  promptActive: boolean;
   width: number;
 }) {
   return (
@@ -674,16 +571,10 @@ function Footer({
       flexShrink={0}
     >
       {doneExit === null ? (
-        promptActive ? (
-          <Text color="yellow" wrap="truncate-end">
-            ↑↓ to choose, ↵ to commit, <Text bold>q</Text> to set down the pen
-          </Text>
-        ) : (
-          <Text color={CHROME} wrap="truncate-end">
-            <Spinner type="dots" /> composing — <Text bold>r</Text> raw pages,{" "}
-            <Text bold>q</Text> quit
-          </Text>
-        )
+        <Text color={CHROME} wrap="truncate-end">
+          <Spinner type="dots" /> composing — <Text bold>r</Text> raw pages,{" "}
+          <Text bold>q</Text> quit
+        </Text>
       ) : doneExit === 0 ? (
         <Text color="green" bold wrap="truncate-end">
           ✦ the volume is bound — q to close
@@ -699,22 +590,11 @@ function Footer({
 
 // ─── Utilities ─────────────────────────────────────────────────────────
 
-/**
- * Turn the live log buffer into a set of concrete rendered rows that fit
- * the pane's viewport. Each LogEntry is expanded into one or more wrapped
- * lines (word-wrap to `width`), then the tail that fits in `maxRows` is
- * kept. A count of hidden-above rows is returned so the pane can render a
- * scroll indicator.
- */
 function wrapLogs(
   logs: LogEntry[],
   width: number,
   maxRows: number,
 ): { lines: PressLineRow[]; hiddenAbove: number } {
-  const rendered: PressLineRow[] = [];
-  // We only need `maxRows` rows of tail — so walk backward, wrapping as
-  // we go, until we've accumulated enough. This keeps the render cheap on
-  // long sessions.
   let produced = 0;
   const reverseBuckets: PressLineRow[][] = [];
   for (let i = logs.length - 1; i >= 0 && produced < maxRows; i--) {
@@ -736,22 +616,14 @@ function wrapLogs(
   const flat: PressLineRow[] = reverseBuckets
     .reverse()
     .reduce<PressLineRow[]>((acc, b) => acc.concat(b), []);
-  // `flat` may exceed maxRows because the earliest bucket was fetched
-  // whole; trim from the head so we keep the most-recent activity.
   const hiddenAbove = Math.max(0, flat.length - maxRows) + Math.max(0, logs.length - reverseBuckets.length);
   const kept = flat.slice(-maxRows);
   kept.forEach((row, i) => {
-    // Use stable keys; if an entry wraps to > width we might get dupes
-    // after trimming — disambiguate by index.
     row.id = `${row.id}-${i}`;
   });
   return { lines: kept, hiddenAbove };
 }
 
-/**
- * Produce a single flowing view of the Muse pane: concatenate recent
- * reasoning paragraphs, word-wrap, and keep the tail that fits.
- */
 function wrapMuse(
   paragraphs: string[],
   width: number,
@@ -760,15 +632,13 @@ function wrapMuse(
   if (paragraphs.length === 0) return { lines: [], hiddenAbove: 0 };
   const allLines: string[] = [];
   paragraphs.forEach((p, i) => {
-    if (i > 0) allLines.push(""); // paragraph break
+    if (i > 0) allLines.push("");
     for (const line of wrapText(p, width)) allLines.push(line);
   });
   const hiddenAbove = Math.max(0, allLines.length - maxRows);
   return { lines: allLines.slice(-maxRows), hiddenAbove };
 }
 
-/** Classic greedy word-wrap to a hard column width. Handles long tokens
- * (URLs, hashes) by breaking them mid-string. */
 function wrapText(text: string, width: number): string[] {
   if (width <= 0) return [text];
   const out: string[] = [];

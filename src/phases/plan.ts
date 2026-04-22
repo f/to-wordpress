@@ -10,64 +10,45 @@ import {
 import type { UiBus } from "../tui/bus.js";
 import { analyzePages } from "./pages.js";
 
+/**
+ * Plan phase. Fully parametric — all decisions come from CLI flags
+ * (ctx.planOverrides) or auto-detection. Never prompts the user.
+ */
 export async function runPlan(ctx: MigrationContext, bus: UiBus): Promise<UserChoices> {
-  bus.pushStreamEvent("plan", { type: "phase_start", phase: "plan", message: "sketching stanzas — a few choices before we press on" });
+  bus.pushStreamEvent("plan", { type: "phase_start", phase: "plan", message: "sketching stanzas — deriving the migration plan" });
 
   const detected = ctx.detected;
   if (!detected) throw new Error("detect phase must run before plan");
 
-  const keep = await bus.askPrompt({
-    id: "plan.keepPermalinks",
-    title: "Permalink mapping",
-    kind: "select",
-    message: buildKeepMessage(detected),
-    options: [
-      { label: "Keep source permalinks (recommended)", value: "keep" },
-      { label: "Use default WordPress /%postname%/", value: "default" },
-    ],
-    default: "keep",
+  const ov = ctx.planOverrides ?? {};
+
+  const keepPermalinks = (ov.permalinks ?? "keep") === "keep";
+  bus.pushStreamEvent("plan", {
+    type: "info",
+    phase: "plan",
+    message: `permalinks: ${keepPermalinks ? "keep source URLs" : "default /%postname%/"}`,
   });
 
+  const cptMode = ov.cpts ?? "all";
   const cpts: UserChoices["customPostTypes"] = [];
   for (const coll of detected.collections) {
     if (coll.name === "posts") continue;
-    const ans = await bus.askPrompt({
-      id: `plan.cpt.${coll.name}`,
-      title: `Custom post type: ${coll.name}`,
-      kind: "select",
-      message: `Source has a '${coll.name}' collection at ${coll.permalink ?? "(default)"} with ${coll.count} entries. Create a WordPress custom post type?`,
-      options: [
-        { label: `Yes, create CPT ${coll.name}`, value: "yes" },
-        { label: "No, import as regular posts", value: "no" },
-      ],
-      default: "yes",
-    });
-    if (ans === "yes") {
+    if (cptMode === "all") {
       const prefix = inferPrefix(coll.permalink);
       cpts.push({ name: coll.name, slug: singular(coll.name), pathPrefix: prefix });
     }
   }
+  if (cpts.length > 0) {
+    bus.pushStreamEvent("plan", {
+      type: "info",
+      phase: "plan",
+      message: `custom post types: ${cpts.map((c) => c.slug).join(", ")}`,
+    });
+  }
 
-  const redirects = await bus.askPrompt({
-    id: "plan.redirects",
-    title: "Legacy URL redirects",
-    kind: "select",
-    message: "Create a redirects map (old path → new path) for any URL shape that changes?",
-    options: [
-      { label: "Yes, generate redirects.json", value: "yes" },
-      { label: "No, skip", value: "no" },
-    ],
-    default: "yes",
-  });
+  const createRedirects = ov.redirects !== false;
 
-  // Inspect every static page and classify its role (front / blog-index /
-  // privacy / terms / contact / archive) so Import can wire the right
-  // WordPress options (show_on_front, page_for_posts, privacy policy).
   const pages = await analyzePages(detected);
-  const frontPage = pages.find((p) => p.role === "front");
-  const blogIndexPage = pages.find((p) => p.role === "blog-index");
-  const privacyPage = pages.find((p) => p.role === "privacy");
-
   if (pages.length > 0) {
     bus.pushStreamEvent("plan", {
       type: "info",
@@ -76,59 +57,24 @@ export async function runPlan(ctx: MigrationContext, bus: UiBus): Promise<UserCh
     });
   }
 
-  let blogIndexSlug = blogIndexPage?.slug;
-  if (pages.length > 0 && !blogIndexSlug) {
-    const options = [
-      { label: "No dedicated blog page (posts live at /)", value: "__none__" },
-      ...pages.map((p) => ({
-        label: `${p.slug}${p.permalink ? "  (" + p.permalink + ")" : ""}`,
-        value: p.slug,
-      })),
-    ];
-    const ans = await bus.askPrompt({
-      id: "plan.blogIndex",
-      title: "Blog index page",
-      kind: "select",
-      message:
-        "Which page should list your blog posts (page_for_posts)? Auto-detect found none with a /blog/ permalink.",
-      options,
-      default: options[0].value,
-    });
-    blogIndexSlug = ans === "__none__" ? undefined : ans;
-  }
-
-  let privacySlug = privacyPage?.slug;
-  if (pages.length > 0 && !privacySlug) {
-    const options = [
-      { label: "No privacy policy page", value: "__none__" },
-      ...pages.map((p) => ({
-        label: `${p.slug}${p.permalink ? "  (" + p.permalink + ")" : ""}`,
-        value: p.slug,
-      })),
-    ];
-    const ans = await bus.askPrompt({
-      id: "plan.privacy",
-      title: "Privacy policy page",
-      kind: "select",
-      message:
-        "Which page is your privacy policy (wp_page_for_privacy_policy)? Auto-detect found none whose slug contains 'privacy'.",
-      options,
-      default: options[0].value,
-    });
-    privacySlug = ans === "__none__" ? undefined : ans;
-  }
+  const frontPageSlug =
+    ov.frontPage ?? pages.find((p) => p.role === "front")?.slug;
+  const blogIndexPageSlug =
+    ov.blogIndex ?? pages.find((p) => p.role === "blog-index")?.slug;
+  const privacyPageSlug =
+    ov.privacyPage ?? pages.find((p) => p.role === "privacy")?.slug;
 
   const choices: UserChoices = {
-    keepPermalinks: keep === "keep",
+    keepPermalinks,
     customPostTypes: cpts,
-    createRedirects: redirects === "yes",
-    frontPageSlug: frontPage?.slug,
-    blogIndexPageSlug: blogIndexSlug,
-    privacyPageSlug: privacySlug,
+    createRedirects,
+    frontPageSlug,
+    blogIndexPageSlug,
+    privacyPageSlug,
     pages,
-    adminUser: "admin",
-    adminPassword: "password",
-    adminEmail: "admin@example.com",
+    adminUser: ov.adminUser ?? "admin",
+    adminPassword: ov.adminPassword ?? "password",
+    adminEmail: ov.adminEmail ?? "admin@example.com",
   };
   ctx.choices = choices;
 
@@ -142,24 +88,8 @@ export async function runPlan(ctx: MigrationContext, bus: UiBus): Promise<UserCh
   const doc = await loadMigrationDoc(ctx.planPath, ctx.sourceDir);
   applyContextToDoc(doc, ctx);
   markPhase(doc, "plan", "running");
-  await saveMigrationDoc(ctx.planPath, doc, [
-    {
-      heading: "Overview",
-      body: `Migration from ${detected.kind} to WordPress using wp-env. ${detected.collections.reduce((a, c) => a + c.count, 0)} posts, ${detected.pages.length} pages, ${detected.layouts.length} layouts detected.`,
-    },
-    {
-      heading: "Detected context (summary)",
-      body: summarizeDetected(detected),
-    },
-    {
-      heading: "Static pages",
-      body: summarizePages(pages),
-    },
-    {
-      heading: "User choices",
-      body: "```json\n" + JSON.stringify(choices, null, 2) + "\n```",
-    },
-  ]);
+  const sections = buildSections(detected, pages, choices);
+  await saveMigrationDoc(ctx.planPath, doc, sections);
 
   if (!ctx.flags.skipCopilot) {
     bus.pushStreamEvent("plan", {
@@ -208,7 +138,18 @@ export async function runPlan(ctx: MigrationContext, bus: UiBus): Promise<UserCh
   const doc2 = await loadMigrationDoc(ctx.planPath, ctx.sourceDir);
   applyContextToDoc(doc2, ctx);
   markPhase(doc2, "plan", "ok");
-  await saveMigrationDoc(ctx.planPath, doc2, [
+  await saveMigrationDoc(ctx.planPath, doc2, sections);
+
+  bus.pushStreamEvent("plan", { type: "phase_ok", phase: "plan" });
+  return choices;
+}
+
+function buildSections(
+  detected: NonNullable<MigrationContext["detected"]>,
+  pages: PageSummary[],
+  choices: UserChoices,
+): Array<{ heading: string; body: string }> {
+  return [
     {
       heading: "Overview",
       body: `Migration from ${detected.kind} to WordPress using wp-env. ${detected.collections.reduce((a, c) => a + c.count, 0)} posts, ${detected.pages.length} pages, ${detected.layouts.length} layouts detected.`,
@@ -225,16 +166,7 @@ export async function runPlan(ctx: MigrationContext, bus: UiBus): Promise<UserCh
       heading: "User choices",
       body: "```json\n" + JSON.stringify(choices, null, 2) + "\n```",
     },
-  ]);
-
-  bus.pushStreamEvent("plan", { type: "phase_ok", phase: "plan" });
-  return choices;
-}
-
-function buildKeepMessage(d: { collections: Array<{ name: string; permalink?: string }> }): string {
-  const first = d.collections[0];
-  if (first && first.permalink) return `Source posts live at ${first.permalink}. Keep this URL shape in WordPress?`;
-  return "Should WordPress mirror the source URL shape as closely as possible?";
+  ];
 }
 
 function inferPrefix(permalink?: string): string {

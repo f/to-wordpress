@@ -117,6 +117,13 @@ export interface DetectedContext {
     postType?: string;
   }>;
   /**
+   * Source code of SSG plugins/hooks (e.g. Jekyll `_plugins/*.rb`).
+   * Keyed by filename, value is the full source. The plugin phase uses
+   * these to understand and replicate custom generators, endpoints,
+   * and build-time behavior in WordPress.
+   */
+  ssgPluginSources?: Record<string, string>;
+  /**
    * Free-form human guidance the detector wants to pass through to every
    * Copilot-driven phase (theme, plugin, normalize conversion, verify,
    * fix). Kept short — one paragraph max. E.g. "this is a GitHub repo's

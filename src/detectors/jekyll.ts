@@ -50,6 +50,20 @@ export const jekyllDetector: Detector = {
     out.sassFiles = await listFiles(join(dir, "_sass"), ".scss");
     out.dataFiles = await listFiles(join(dir, "_data"));
     out.ssgPlugins = await listFiles(join(dir, "_plugins"), ".rb");
+
+    const pluginSources: Record<string, string> = {};
+    for (const pluginPath of out.ssgPlugins) {
+      try {
+        const src = await readFile(pluginPath, "utf8");
+        const name = pluginPath.split("/").pop() ?? pluginPath;
+        pluginSources[name] = src;
+      } catch {
+        /* skip unreadable files */
+      }
+    }
+    if (Object.keys(pluginSources).length > 0) {
+      out.ssgPluginSources = pluginSources;
+    }
     if (existsSync(join(dir, "assets"))) out.assetsDirs.push(join(dir, "assets"));
 
     const collectionsDir = ((config.collections_dir as string | undefined) ?? "_").replace(/^\.\/?/, "");

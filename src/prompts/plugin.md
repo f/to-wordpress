@@ -5,8 +5,9 @@
 Produce a single site-specific WordPress plugin that owns everything
 "non-theme" about the source site: custom post types, custom taxonomies,
 custom blocks/shortcodes, comments integration, newsletter, analytics,
-cookie banner, and the redirects map. These concerns must survive a theme
-change; they do NOT belong in the theme.
+cookie banner, redirects map, **and every custom behavior from the source
+SSG's plugins**. These concerns must survive a theme change; they do NOT
+belong in the theme.
 
 ## Scope
 
@@ -40,6 +41,61 @@ User choices:
 ```json
 {{CHOICES_JSON}}
 ```
+
+## SSG Plugin Migration (CRITICAL)
+
+The source site has SSG-level plugins (generators, hooks, custom build
+steps) that produce custom pages, endpoints, or content transformations.
+**You MUST analyze each one and replicate its behavior in WordPress.**
+
+Source SSG plugin files:
+
+{{SSG_PLUGINS_SOURCE}}
+
+**For every SSG plugin above:**
+
+1. **Read the source code carefully.** Understand what it generates —
+   custom pages? alternate views of existing content? category indexes?
+   RSS feeds? sitemaps?
+
+2. **Create a matching WordPress implementation** in `includes/` that
+   produces the same URLs with the same content. Common patterns:
+
+   | SSG pattern | WordPress equivalent |
+   |---|---|
+   | Generator that creates parallel pages (e.g. `/llm/{slug}/` mirror of `/blog/{slug}/`) | Custom rewrite rules + a page template/endpoint that renders the alternate view. Use `add_rewrite_rule` + `query_vars` filter + `template_include` filter. |
+   | Generator that creates category/tag index pages | Already handled by WordPress taxonomy archives — but if the source uses a custom URL pattern, add `add_rewrite_rule` to match. |
+   | Generator that creates data-driven pages from YAML/JSON | Custom page + `WP_Query` or options-based data rendering. |
+   | Build hook that transforms content (e.g. markdown rendering, syntax highlighting) | `the_content` filter or shortcode. |
+
+3. **The `/llm/` pattern specifically** (if present): The source has a
+   generator that creates a parallel set of pages at `/llm/{post-slug}/`
+   which display each blog post's raw markdown in a special layout
+   (typically for LLM consumption). To replicate:
+
+   - Register a custom rewrite: `/llm/(.+)/?$` → `index.php?llm_post=$matches[1]`
+   - Add `llm_post` to `query_vars`
+   - On `template_include`, if `get_query_var('llm_post')` is set, find
+     the post by slug, and render using a dedicated PHP template that
+     outputs the post content as markdown inside `<pre>` with any
+     context/instructions markup the source layout used.
+   - Flush rewrite rules on activation.
+   - The rendered page must be HTML (not raw markdown MIME type) — same
+     as the source which wraps markdown in `<pre>` tags.
+   - Copy the structure from the source's `post-llm` layout: `<context>`
+     block, `<instructions>` block, `<pre>` with the markdown.
+
+4. **Category page generators**: If the source has a generator that
+   creates `/category/{slug}/` pages, WordPress already handles this via
+   taxonomy archives. But ensure the URL structure matches — add rewrite
+   rules if the source uses a non-default pattern like `/category/`
+   instead of WordPress's default `/category/`.
+
+**Every custom URL the source produces MUST have a working WordPress
+equivalent.** If the source generates `/llm/`, `/feed.xml`, custom
+category pages, or any other computed output, the plugin MUST replicate
+it. An endpoint that existed in the source but is missing in WordPress is
+a migration failure.
 
 ## Required output
 
@@ -83,6 +139,8 @@ emit a stub.
 | Cookie banner | `includes/cookie-banner.php` | `features.cookieBanner` |
 | Dark mode | `includes/dark-mode.php` | `features.darkMode` |
 | Open Graph / Twitter Card | `includes/social-meta.php` | `features.twitterSite` / `features.twitterCreator` / `features.metaOpengraphType` |
+| SSG plugin endpoints | `includes/endpoints.php` | any SSG plugin that generates custom URL patterns (e.g. `/llm/`, `/feed/`, category pages) |
+| SSG plugin generators | `includes/generators.php` | any SSG plugin that produces alternate content views or computed pages |
 | Redirects | `includes/redirects.php` | always |
 | Shortcodes | `includes/shortcodes.php` | if `_source_includes/shortcodes/*` exists |
 | Blocks | `includes/blocks.php` + `includes/blocks/<name>/` | if `.prompt.yml` files exist, or source has interactive blocks |

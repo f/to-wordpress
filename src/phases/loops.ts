@@ -122,14 +122,13 @@ export function bootLoop(
 
 // ─── theme ────────────────────────────────────────────────────────────
 
-const REQUIRED_TEMPLATES = [
+const REQUIRED_BLOCK_THEME_FILES = [
   "style.css",
   "functions.php",
-  "index.php",
-  "header.php",
-  "footer.php",
-  "single.php",
-  "page.php",
+  "theme.json",
+  "templates/index.html",
+  "parts/header.html",
+  "parts/footer.html",
 ];
 
 export function themeLoop(
@@ -145,7 +144,7 @@ export function themeLoop(
     },
     async test() {
       const issues: string[] = [];
-      const missing = REQUIRED_TEMPLATES.filter(
+      const missing = REQUIRED_BLOCK_THEME_FILES.filter(
         (f) => !existsSync(join(ctx.themeDir, f)),
       );
       if (missing.length > 0) {

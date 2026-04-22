@@ -33,7 +33,7 @@ import {
 } from "./phases/loops.js";
 import type { PhaseStatus } from "./types.js";
 
-const PACKAGE_VERSION = "0.4.0";
+const PACKAGE_VERSION = "0.4.1";
 
 interface CliOptions {
   skipBoot?: boolean;

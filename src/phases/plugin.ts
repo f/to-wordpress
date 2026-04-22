@@ -27,6 +27,13 @@ export async function runPlugin(ctx: MigrationContext, bus: UiBus): Promise<void
       /* ignore */
     }
   }
+  const ssgPluginSources = detected.ssgPluginSources ?? {};
+  const ssgPluginsBlock = Object.keys(ssgPluginSources).length > 0
+    ? Object.entries(ssgPluginSources)
+        .map(([name, src]) => `### \`${name}\`\n\n\`\`\`ruby\n${src}\n\`\`\``)
+        .join("\n\n")
+    : "(no SSG plugins detected)";
+
   const prompt = interpolate(tpl, {
     PLUGIN_DIR: ctx.pluginDir,
     PLUGIN_SLUG: detected.pluginSlug,
@@ -41,6 +48,7 @@ export async function runPlugin(ctx: MigrationContext, bus: UiBus): Promise<void
     SHORTCODES_LIST: discoveredShortcodes.length > 0
       ? discoveredShortcodes.map((n) => `- wpify_${n}`).join("\n")
       : "(none detected)",
+    SSG_PLUGINS_SOURCE: ssgPluginsBlock,
   });
 
   const result = await runCopilotPhase(bus, "plugin", {

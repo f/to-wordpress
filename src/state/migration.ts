@@ -49,6 +49,7 @@ export function emptyDoc(sourceDir: string): MigrationDoc {
       import: { status: "pending" },
       verify: { status: "pending" },
       fix: { status: "pending" },
+      testfix: { status: "pending" },
     },
     notes: [],
   };
@@ -63,10 +64,22 @@ export async function loadMigrationDoc(path: string, sourceDir: string): Promise
   const jsonStart = raw.indexOf("\n", start) + 1;
   const jsonBlock = raw.slice(jsonStart, end).trim();
   try {
-    return JSON.parse(jsonBlock) as MigrationDoc;
+    return normalizeDoc(JSON.parse(jsonBlock) as MigrationDoc, sourceDir);
   } catch {
     return emptyDoc(sourceDir);
   }
+}
+
+function normalizeDoc(doc: MigrationDoc, sourceDir: string): MigrationDoc {
+  const base = emptyDoc(sourceDir);
+  const phases = { ...base.phases, ...(doc.phases ?? {}) };
+  return {
+    ...base,
+    ...doc,
+    sourceDir: doc.sourceDir ?? sourceDir,
+    phases,
+    notes: doc.notes ?? [],
+  };
 }
 
 export async function saveMigrationDoc(

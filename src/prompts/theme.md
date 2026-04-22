@@ -8,6 +8,22 @@ same CSS, same fonts. Verify will fetch the live WP pages and diff them
 against the rendered reference below — a mismatched hero heading, missing
 image, empty menu, or swapped class list is a hard failure.
 
+**Pixel-fidelity loop (new).** Immediately after your first pass the
+tool activates this theme on the live WordPress, fetches
+`http://localhost:8888/`, and computes a structural diff against the
+source-rendered home page. Every mismatch (missing heading, missing
+nav item, wrong class, missing image, empty body) is fed back to a
+**theme-refine** step that re-opens this phase up to three times. So:
+
+- Do NOT skip the hero. The home page `<h1>` text (including nested
+  `<em>` / `<strong>` / `<br>`) MUST match the reference exactly.
+- Do NOT emit placeholder nav or a single "Menu" item. If
+  `wp_nav_menu` isn't populated yet, fall back to the data in
+  `inc/data.php` so the first render already has the real links.
+- Do NOT drop `/assets/…` images from the hero, cards, or footer.
+- Do NOT wait for a "polish pass" to land fidelity — aim for zero
+  gaps on the first pass so the refinement loop exits immediately.
+
 ## Scope
 
 - Write allowed: only inside `{{THEME_DIR}}`.

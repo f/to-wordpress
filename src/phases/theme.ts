@@ -6,6 +6,7 @@ import { runCopilot } from "../copilot/run.js";
 import { interpolate, loadPrompt } from "../prompts/index.js";
 import type { UiBus } from "../tui/bus.js";
 import { readSample, runPrerender, type PrerenderResult } from "./prerender.js";
+import { runThemeRefine } from "./theme-refine.js";
 
 const REQUIRED_TEMPLATES = [
   "style.css",
@@ -82,6 +83,23 @@ export async function runTheme(ctx: MigrationContext, bus: UiBus): Promise<void>
     bus.pushStreamEvent("theme", { type: "phase_fail", phase: "theme", message: `copilot exited with ${result.exitCode}` });
     throw new Error(`theme phase failed (copilot ${result.exitCode})`);
   }
+
+  // Post-theme pixel-fidelity loop. Activates the theme on wp-env,
+  // fetches the live home page, diffs it structurally against the
+  // source-rendered home, and — if there are gaps — hands Copilot a
+  // targeted "close the gap" prompt. Up to 3 passes. Best-effort —
+  // failures here don't fail the theme phase; verify/fix picks up
+  // any remaining drift after content is imported.
+  try {
+    await runThemeRefine(ctx, bus, prerender, { maxPasses: 3 });
+  } catch (err) {
+    bus.pushStreamEvent("theme", {
+      type: "warn",
+      phase: "theme",
+      message: `theme refinement errored (${(err as Error).message}) — continuing to next phase`,
+    });
+  }
+
   bus.pushStreamEvent("theme", { type: "phase_ok", phase: "theme" });
 }
 

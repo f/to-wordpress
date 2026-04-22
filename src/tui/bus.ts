@@ -35,6 +35,21 @@ export interface EtaUpdate {
   active?: PhaseId;
 }
 
+/**
+ * Emitted via `bus.emit("summary", MigrationSummary)` right before the
+ * final `done` event on a successful migration. Both the TUI footer and
+ * the headless logger render it as the migration's end card so the user
+ * always walks away knowing the URL + admin credentials.
+ */
+export interface MigrationSummary {
+  siteUrl: string;
+  adminUrl: string;
+  adminUser: string;
+  adminPassword: string;
+  sourceDir: string;
+  durationSeconds: number;
+}
+
 export interface PromptRequest {
   id: string;
   title: string;
@@ -67,6 +82,88 @@ interface LiveStream {
  */
 const LIVE_WRAP_CHARS = 4000;
 
+/**
+ * Copilot streams assistant/reasoning output as small deltas. Many wire
+ * formats prepend a leading space before each token, so we get `"WORD"` +
+ * `" PRESS"` → `"WORD PRESS"` instead of `WORDPRESS`. Drop that spacer
+ * only when it clearly splits a single technical token (CONSTANT_CASE,
+ * snake_case, hyphenated compounds, `I'm`, markdown `**`).
+ */
+export function normalizeStreamDelta(bufferSoFar: string, incoming: string): string {
+  if (!incoming || bufferSoFar.length === 0) return incoming;
+  if (!/^\s/.test(incoming)) return incoming;
+  const trimmed = incoming.replace(/^\s+/, "");
+  if (!trimmed.length) return incoming;
+  if (!shouldDropLeadingSpaceBetween(bufferSoFar, trimmed)) return incoming;
+  return trimmed;
+}
+
+function shouldDropLeadingSpaceBetween(buf: string, chunkNoLeadSpace: string): boolean {
+  const last = buf[buf.length - 1];
+  const first = chunkNoLeadSpace[0];
+  if (!last || !first) return false;
+
+  // `built` + `-in` → built-in
+  if (/[A-Za-z0-9]/.test(last) && first === "-") return true;
+  // `I` + `'m` / `'` + `m`
+  if (/[A-Za-z]/.test(last) && (first === "'" || first === "’")) return true;
+
+  const lw = lastToken(buf);
+  const fw = firstToken(chunkNoLeadSpace);
+  if (!lw || !fw) return false;
+
+  // `**` bold delimiter split across deltas
+  if (lw.endsWith("*") && fw.startsWith("*")) return true;
+
+  // `WORD` + `PRESS` → WORDPRESS (avoid merging `THE` + `QUICK`)
+  if (/^[A-Z][A-Z0-9_]*$/.test(lw) && /^[A-Z0-9_]+$/.test(fw)) {
+    const stop = new Set([
+      "THE",
+      "A",
+      "AN",
+      "TO",
+      "OF",
+      "IN",
+      "ON",
+      "AT",
+      "IS",
+      "IT",
+      "BE",
+      "AS",
+      "OR",
+      "BY",
+      "WE",
+      "US",
+      "DO",
+      "NO",
+      "IF",
+      "SO",
+      "MY",
+      "ME",
+      "UP",
+      "HE",
+      "HI",
+    ]);
+    if (!stop.has(lw) && !stop.has(fw)) return true;
+  }
+
+  // snake_case / path: `foo` + `_bar` or `WORD` + `_PRESS`
+  if (first === "_" && /[A-Za-z0-9]$/.test(last)) return true;
+  if (lw.includes("_") && /^[A-Za-z0-9_]+$/.test(fw)) return true;
+
+  return false;
+}
+
+function lastToken(buf: string): string | undefined {
+  const m = /([A-Za-z0-9_*][A-Za-z0-9._$#/*-]*)$/.exec(buf);
+  return m?.[1];
+}
+
+function firstToken(chunk: string): string | undefined {
+  const m = /^([A-Za-z0-9_*][A-Za-z0-9._$#/*-]*)/.exec(chunk);
+  return m?.[1];
+}
+
 export class UiBus extends EventEmitter {
   private logId = 0;
   /**
@@ -76,6 +173,15 @@ export class UiBus extends EventEmitter {
    * growing line instead of a ladder of one-word rows.
    */
   private live: LiveStream | null = null;
+  /**
+   * When a tool call interrupts the live stream we start a fresh `live`
+   * entry; the next token delta may still belong to the same English word
+   * or identifier as the tail of the previous stream (`WORD` + ` PRESS`).
+   * Keep a short suffix of the last emitted live text so
+   * {@link normalizeStreamDelta} can still decide whether to drop a
+   * spurious leading space on the first chunk of the new stream.
+   */
+  private streamGlueSuffix = "";
   /**
    * Ring buffer of the last few hundred user-facing log lines. Used by
    * the per-phase repair flow so Copilot gets a tail of the run's
@@ -107,8 +213,8 @@ export class UiBus extends EventEmitter {
     // rows — that's the only way to avoid the ragged
     // "The / mirrored / theme / already / has" one-word ladder.
     if (ev.type === "message" || ev.type === "reasoning") {
-      const text = ev.text ?? "";
-      if (!text) return;
+      const raw = ev.text ?? "";
+      if (!raw) return;
       const kind: PendingKind = ev.type === "message" ? "assistant" : "reasoning";
 
       const sameStream =
@@ -117,6 +223,15 @@ export class UiBus extends EventEmitter {
         this.live.phase === phase;
 
       if (!sameStream) {
+        // Carry a short tail across stream breaks inside the same phase/kind
+        // (e.g. wrap split, or a new live id after a tool call — in the
+        // latter case `live` is already null and glue was stashed when the
+        // tool event cleared the previous stream).
+        if (this.live && this.live.phase === phase && this.live.kind === kind && this.live.text.length > 0) {
+          this.streamGlueSuffix = this.live.text.slice(-96);
+        } else if (this.live) {
+          this.streamGlueSuffix = "";
+        }
         // Finalize the previous live stream (just drop the reference —
         // it's already been emitted; nothing more to do) and begin a new
         // one with a fresh id.
@@ -129,10 +244,15 @@ export class UiBus extends EventEmitter {
         };
       }
 
+      const buf = this.live!.text.length > 0 ? this.live!.text : this.streamGlueSuffix;
+      const text = normalizeStreamDelta(buf, raw);
+      this.live!.text += text;
+      if (this.live!.text.length > 0) this.streamGlueSuffix = "";
+
       // Append delta. If the live entry grows past the wrap limit, start
       // a new one so pane rendering stays cheap.
-      this.live!.text += text;
       if (this.live!.text.length > LIVE_WRAP_CHARS) {
+        this.streamGlueSuffix = this.live!.text.slice(-96);
         this.emitLive();
         this.live = {
           id: ++this.logId,
@@ -149,6 +269,10 @@ export class UiBus extends EventEmitter {
 
     // Any non-stream event finalizes the live stream so subsequent
     // events (tool calls, info lines, phase changes) sit below it.
+    if (ev.type === "phase_start") this.streamGlueSuffix = "";
+    if (this.live !== null && this.live.text.length > 0) {
+      this.streamGlueSuffix = this.live.text.slice(-96);
+    }
     this.live = null;
 
     const entry = this.streamToLog(phase, ev);
@@ -172,6 +296,8 @@ export class UiBus extends EventEmitter {
     // tick. `text.trim()` is only used to detect an "empty so far" case.
     const display = p.text
       .replace(/[ \t]+/g, " ")
+      // Streaming often yields `word` + ` .` — collapse that gap.
+      .replace(/([A-Za-z0-9])\s+([.,;:!?])(?=\s|$)/g, "$1$2")
       .replace(/\n{3,}/g, "\n\n")
       .replace(/[ \t]*\n[ \t]*/g, "\n");
     if (!display.trim()) return;
@@ -368,6 +494,7 @@ export const PHASE_TITLES: Record<PhaseId, string> = {
   import: "Binding the manuscript",
   verify: "Reading it aloud",
   fix: "Revising the lines",
+  testfix: "Road-testing every page",
 };
 
 /** One-word verbs for compact spots (e.g. git commit messages if ever surfaced). */
@@ -381,4 +508,5 @@ export const PHASE_VERBS: Record<PhaseId, string> = {
   import: "bind",
   verify: "read",
   fix: "revise",
+  testfix: "test",
 };

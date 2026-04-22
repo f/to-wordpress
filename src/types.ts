@@ -9,7 +9,8 @@ export type PhaseId =
   | "normalize"
   | "import"
   | "verify"
-  | "fix";
+  | "fix"
+  | "testfix";
 
 export type PhaseStatus = "pending" | "running" | "ok" | "fail" | "skipped";
 

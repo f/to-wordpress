@@ -29,20 +29,16 @@ export interface CopilotRunResult {
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 
 /**
- * Default Copilot model for every creative phase. Opus is our reasoning
- * workhorse; paired with medium reasoning effort it's the sweet spot of
- * quality vs. latency for Liquid-to-PHP translation, custom-block generation,
- * and the verify fix loop. Override with --model <slug>, COPILOT_MODEL, or
- * --effort / COPILOT_EFFORT.
+ * Default Copilot model and reasoning effort for every creative phase.
+ * Override with `--model` / `COPILOT_MODEL` and `--effort` / `COPILOT_EFFORT`.
  *
- * NOTE: Copilot CLI model slugs are family-only (e.g. `claude-opus-4.7`);
- * effort is a separate `--effort` flag, not a suffix.
+ * NOTE: Model slugs are whatever the Copilot CLI accepts (e.g. `gpt-5.4`);
+ * effort is a separate `--effort` flag, not a suffix on the model name.
  */
-export const DEFAULT_COPILOT_MODEL =
-  process.env.COPILOT_MODEL ?? "claude-opus-4.7";
+export const DEFAULT_COPILOT_MODEL = process.env.COPILOT_MODEL ?? "gpt-5.4";
 
 export const DEFAULT_COPILOT_EFFORT: "low" | "medium" | "high" | "xhigh" =
-  (process.env.COPILOT_EFFORT as "low" | "medium" | "high" | "xhigh" | undefined) ?? "medium";
+  (process.env.COPILOT_EFFORT as "low" | "medium" | "high" | "xhigh" | undefined) ?? "high";
 
 function buildArgs(opts: CopilotRunOptions): string[] {
   const args: string[] = [

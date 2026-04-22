@@ -17,6 +17,7 @@ const BASE_SECONDS: Record<PhaseId, number> = {
   import: 30,
   verify: 25,
   fix: 90,
+  testfix: 120,
 };
 
 const PER_ITEM = {
@@ -63,6 +64,7 @@ export function computePhaseBudgets(ctx: MigrationContext): Record<PhaseId, numb
     import: flags.skipBoot ? 0 : importCost,
     verify: flags.skipBoot ? 0 : verifyCost,
     fix: flags.skipCopilot ? 0 : BASE_SECONDS.fix,
+    testfix: flags.skipBoot ? 0 : BASE_SECONDS.testfix,
   };
   return budgets;
 }
@@ -99,6 +101,7 @@ export function computeEta(
     "import",
     "verify",
     "fix",
+    "testfix",
   ];
   const completed: PhaseId[] = [];
   let active: PhaseId | undefined;

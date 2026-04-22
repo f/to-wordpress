@@ -17,6 +17,7 @@ import { runNormalize } from "./phases/normalize.js";
 import { runImport } from "./phases/import.js";
 import { runVerify } from "./phases/verify.js";
 import { runFixLoop } from "./phases/fix.js";
+import { runTestFixLoop } from "./phases/testfix.js";
 import {
   applyContextToDoc,
   loadMigrationDoc,
@@ -31,7 +32,7 @@ import { computeEta } from "./phases/eta.js";
 import { DEFAULT_COPILOT_MODEL, DEFAULT_COPILOT_EFFORT } from "./copilot/run.js";
 import type { PhaseStatus } from "./types.js";
 
-const PACKAGE_VERSION = "0.1.2";
+const PACKAGE_VERSION = "0.3.2";
 
 interface CliOptions {
   skipBoot?: boolean;
@@ -56,6 +57,7 @@ const PHASE_ORDER: PhaseId[] = [
   "import",
   "verify",
   "fix",
+  "testfix",
 ];
 
 async function main(): Promise<void> {
@@ -105,6 +107,7 @@ async function main(): Promise<void> {
 
   const bus = new UiBus();
   bus.autoAnswer = Boolean(opts.yes);
+  const startedAt = Date.now();
 
   const isTty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
   const headless = !isTty || Boolean(opts.yes);
@@ -249,9 +252,49 @@ async function main(): Promise<void> {
       );
       if (final && !final.ok) exitCode = 2;
     }
+    const endpointReport = await step("testfix", !opts.skipBoot, async () =>
+      runTestFixLoop(ctx, bus, {
+        maxIterations: opts.maxFixIterations,
+        allowCopilot: !opts.skipCopilot,
+      }),
+    );
+    if (endpointReport && !endpointReport.ok) exitCode = 2;
   } catch (err) {
     bus.pushStreamEvent(undefined, { type: "error", message: (err as Error).message });
     exitCode = 1;
+  }
+
+  if (exitCode === 0) {
+    await hydrateWpUrl(ctx);
+    const siteUrl = ctx.wpUrl ?? "http://localhost:8888";
+    const adminUrl = siteUrl.replace(/\/+$/, "") + "/wp-admin/";
+    const adminUser = ctx.choices?.adminUser ?? "admin";
+    const adminPassword = ctx.choices?.adminPassword ?? "password";
+    const durationSeconds = Math.round((Date.now() - startedAt) / 1000);
+
+    for (const line of [
+      "────────────────────────────────────────────────────",
+      "  Migration complete — your WordPress is ready.",
+      "────────────────────────────────────────────────────",
+      `  Site:      ${siteUrl}`,
+      `  Admin:     ${adminUrl}`,
+      `  Username:  ${adminUser}`,
+      `  Password:  ${adminPassword}`,
+      `  Source:    ${ctx.sourceDir}`,
+      "────────────────────────────────────────────────────",
+      "  Tip: `npx wp-env stop` pauses the stack; `npx wp-env start` resumes.",
+    ]) {
+      bus.pushStreamEvent(undefined, { type: "info", phase: "fix", message: line });
+    }
+
+    bus.emit("summary", {
+      siteUrl,
+      adminUrl,
+      adminUser,
+      adminPassword,
+      sourceDir: ctx.sourceDir,
+      durationSeconds,
+    });
   }
 
   bus.emit("done", exitCode);

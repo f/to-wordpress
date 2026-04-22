@@ -9,6 +9,7 @@ import {
   UiBus,
   type EtaUpdate,
   type LogEntry,
+  type MigrationSummary,
   type PromptRequest,
 } from "./bus.js";
 import { formatDuration } from "../phases/eta.js";
@@ -79,6 +80,7 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
   const [now, setNow] = useState<number>(Date.now());
   const [startedAt] = useState<number>(Date.now());
   const [eta, setEta] = useState<EtaUpdate | null>(null);
+  const [summary, setSummary] = useState<MigrationSummary | null>(null);
 
   useInput(
     (input, key) => {
@@ -142,17 +144,20 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
     };
     const onDone = (exitCode: number) => setDoneExit(exitCode);
     const onEta = (update: EtaUpdate) => setEta(update);
+    const onSummary = (s: MigrationSummary) => setSummary(s);
     bus.on("log", onLog);
     bus.on("phase", onPhase);
     bus.on("prompt:request", onPrompt);
     bus.on("done", onDone);
     bus.on("eta", onEta);
+    bus.on("summary", onSummary);
     return () => {
       bus.off("log", onLog);
       bus.off("phase", onPhase);
       bus.off("prompt:request", onPrompt);
       bus.off("done", onDone);
       bus.off("eta", onEta);
+      bus.off("summary", onSummary);
       if (flushTimer) clearTimeout(flushTimer);
     };
   }, [bus]);
@@ -165,7 +170,13 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
   const HEADER_ROWS = 5;
   const FOOTER_ROWS = 3;
   const PROMPT_ROWS = prompt ? promptRowCount(prompt) : 0;
-  const bodyRows = Math.max(6, size.rows - HEADER_ROWS - FOOTER_ROWS - PROMPT_ROWS);
+  // When we have a summary card to show, reserve 8 rows for it (border +
+  // 6 lines of content + 1 breathing row).
+  const SUMMARY_ROWS = summary ? 9 : 0;
+  const bodyRows = Math.max(
+    6,
+    size.rows - HEADER_ROWS - FOOTER_ROWS - PROMPT_ROWS - SUMMARY_ROWS,
+  );
 
   // Each pane renders its content inside a single-line border + 1 char
   // horizontal padding. That eats 2 rows (top/bottom border) and 2 cols
@@ -274,11 +285,62 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
         />
       ) : null}
 
+      {summary ? <SummaryCard summary={summary} width={size.cols} /> : null}
+
       <Footer
         doneExit={doneExit}
         promptActive={!!prompt}
         width={size.cols}
       />
+    </Box>
+  );
+}
+
+// ─── Summary card ──────────────────────────────────────────────────────
+
+/**
+ * Printed on a successful finish. Shows the live URL + admin
+ * credentials so the user walks away knowing exactly how to log in.
+ * Sits just above the Footer so it survives the entire "done" state
+ * (the user can copy-paste out of the terminal until they press `q`).
+ */
+function SummaryCard({ summary, width }: { summary: MigrationSummary; width: number }) {
+  const row = (label: string, value: string, valueColor: string = WP_BLUE) => (
+    <Box>
+      <Box width={11} flexShrink={0}>
+        <Text color={CHROME}>  {label}</Text>
+      </Box>
+      <Text color={valueColor} bold wrap="truncate-end">
+        {value}
+      </Text>
+    </Box>
+  );
+  return (
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor="green"
+      paddingX={1}
+      width={width}
+      flexShrink={0}
+    >
+      <Box>
+        <Text color="green" bold>
+          ✦ Migration complete — copy these before closing:
+        </Text>
+      </Box>
+      {row("Site:", summary.siteUrl)}
+      {row("Admin:", summary.adminUrl)}
+      {row("Username:", summary.adminUser, "yellow")}
+      {row("Password:", summary.adminPassword, "yellow")}
+      {row("Source:", summary.sourceDir, CHROME)}
+      <Box>
+        <Text color={CHROME}>
+          {"  Took " +
+            formatDuration(summary.durationSeconds) +
+            " · `npx wp-env stop` pauses the stack, `npx wp-env start` resumes."}
+        </Text>
+      </Box>
     </Box>
   );
 }

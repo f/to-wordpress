@@ -1,5 +1,5 @@
 import type { MigrationContext, PageSummary, UserChoices } from "../types.js";
-import { runCopilot } from "../copilot/run.js";
+import { runCopilot } from "../agents/index.js";
 import { interpolate, loadPrompt } from "../prompts/index.js";
 import {
   applyContextToDoc,

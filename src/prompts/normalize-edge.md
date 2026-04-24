@@ -54,9 +54,9 @@ source_path: string            # required; absolute path of the source file
 3. **Body cleanup.**
    - Replace each `{% include <path> %}` that refers to a known shortcode
      partial with a WordPress shortcode call like
-     `[wpify_button text="…"]` using the same attributes.
+     `[towp_button text="…"]` using the same attributes.
    - Unknown `{% include X %}` MUST become
-     `<!-- wpify:include src="X" reason="unresolved" -->` so the fix
+     `<!-- towp:include src="X" reason="unresolved" -->` so the fix
      phase can see it.
    - Remove Liquid loops that iterate over site collections — those are
      layout concerns, not content. If removing one leaves an empty
@@ -110,6 +110,6 @@ Newline after the closing `---`, trailing newline at end of file.
 - [ ] `slug` matches `^[a-z0-9]+(-[a-z0-9]+)*$`.
 - [ ] No `{% … %}` or `{{ … }}` Liquid tags remain in the body.
 - [ ] Any unresolved include is marked with
-      `<!-- wpify:include src="…" reason="…" -->`.
+      `<!-- towp:include src="…" reason="…" -->`.
 - [ ] `original_permalink` and `source_path` are set.
 - [ ] No other file on disk was modified.

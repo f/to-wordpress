@@ -7,7 +7,7 @@ import type { UiBus } from "../tui/bus.js";
 import type { Detector } from "./types.js";
 import { baseContext, listFiles, readCname, walkAll } from "./common.js";
 import { interpolate, loadPrompt } from "../prompts/index.js";
-import { runCopilot } from "../copilot/run.js";
+import { runCopilot } from "../agents/index.js";
 
 /**
  * Freestyle detector — always succeeds. When none of the built-in SSG

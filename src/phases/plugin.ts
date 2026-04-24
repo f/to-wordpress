@@ -34,6 +34,17 @@ export async function runPlugin(ctx: MigrationContext, bus: UiBus): Promise<void
         .join("\n\n")
     : "(no SSG plugins detected)";
 
+  // Read the blockify manifest so the plugin prompt knows which blocks exist.
+  const blocksManifestPath = join(ctx.workDir, "blocks.json");
+  let blocksManifest: { blocks?: Array<{ name: string; slug: string }> } = {};
+  if (existsSync(blocksManifestPath)) {
+    try {
+      blocksManifest = JSON.parse(await readFile(blocksManifestPath, "utf8"));
+    } catch {
+      /* ignore */
+    }
+  }
+
   const prompt = interpolate(tpl, {
     PLUGIN_DIR: ctx.pluginDir,
     PLUGIN_SLUG: detected.pluginSlug,
@@ -46,9 +57,13 @@ export async function runPlugin(ctx: MigrationContext, bus: UiBus): Promise<void
     CHOICES_JSON: JSON.stringify(choices, null, 2),
     SHORTCODES_JSON: JSON.stringify(discoveredShortcodes, null, 2),
     SHORTCODES_LIST: discoveredShortcodes.length > 0
-      ? discoveredShortcodes.map((n) => `- wpify_${n}`).join("\n")
+      ? discoveredShortcodes.map((n) => `- towp_${n}`).join("\n")
       : "(none detected)",
+    SHORTCODES_LIST_PHP: discoveredShortcodes.length > 0
+      ? discoveredShortcodes.map((n) => `'${n.replace(/'/g, "\\'")}'`).join(", ")
+      : "",
     SSG_PLUGINS_SOURCE: ssgPluginsBlock,
+    BLOCKS_JSON: JSON.stringify(blocksManifest.blocks ?? [], null, 2),
   });
 
   const result = await runCopilotPhase(bus, "plugin", {
@@ -82,7 +97,7 @@ export async function runPlugin(ctx: MigrationContext, bus: UiBus): Promise<void
   }
 
   // Guarantee every detected shortcode is registered with a PHP callback,
-  // even if Copilot missed one. An unregistered `[wpify_figure ...]` would
+  // even if Copilot missed one. An unregistered `[towp_figure ...]` would
   // otherwise render as literal bracket text in a published post.
   const shortcodesFile = join(ctx.pluginDir, "includes", "shortcodes.php");
   if (discoveredShortcodes.length > 0 && !existsSync(shortcodesFile)) {
@@ -130,7 +145,7 @@ function php(s: string): string {
  * normalize phase emitted. Each handler renders a semantic wrapper with
  * all source attributes exposed as `data-*`. Copilot is expected to
  * overwrite this with proper per-shortcode markup, but the fallback
- * guarantees the rendered post never leaks raw `[wpify_xyz …]` text.
+ * guarantees the rendered post never leaks raw `[towp_xyz …]` text.
  */
 function buildShortcodesFallback(names: string[]): string {
   const lines: string[] = [
@@ -140,8 +155,8 @@ function buildShortcodesFallback(names: string[]): string {
     "// _includes/framework/shortcodes/ or _includes/shortcodes/).",
     "if ( ! defined( 'ABSPATH' ) ) { exit; }",
     "",
-    "if ( ! function_exists( 'wpify_shortcode_attrs_to_data' ) ) {",
-    "    function wpify_shortcode_attrs_to_data( $atts ) {",
+    "if ( ! function_exists( 'towp_shortcode_attrs_to_data' ) ) {",
+    "    function towp_shortcode_attrs_to_data( $atts ) {",
     "        $out = '';",
     "        foreach ( (array) $atts as $k => $v ) {",
     "            $out .= ' data-' . sanitize_key( $k ) . '=\"' . esc_attr( $v ) . '\"';",
@@ -154,12 +169,12 @@ function buildShortcodesFallback(names: string[]): string {
   ];
   for (const n of names) {
     lines.push(
-      `    add_shortcode( 'wpify_${n}', function ( $atts, $content = null ) {`,
-      `        $atts = shortcode_atts( [], (array) $atts, 'wpify_${n}' );`,
-      `        $data = wpify_shortcode_attrs_to_data( $atts );`,
-      `        $label = esc_html( 'wpify_${n}' );`,
+      `    add_shortcode( 'towp_${n}', function ( $atts, $content = null ) {`,
+      `        $atts = shortcode_atts( [], (array) $atts, 'towp_${n}' );`,
+      `        $data = towp_shortcode_attrs_to_data( $atts );`,
+      `        $label = esc_html( 'towp_${n}' );`,
       `        $inner = $content ? wp_kses_post( $content ) : '';`,
-      `        return '<div class="wpify-shortcode wpify-shortcode--${n}"' . $data . '>' . $inner . '</div>';`,
+      `        return '<div class="towp-shortcode towp-shortcode--${n}"' . $data . '>' . $inner . '</div>';`,
       `    } );`,
     );
   }

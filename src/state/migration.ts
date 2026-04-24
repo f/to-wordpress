@@ -29,8 +29,8 @@ export function setSection(doc: MigrationDoc, heading: string, body: string): vo
   else doc.sections.push({ heading, body });
 }
 
-const MARKER_START = "<!-- WPIFY:STATE:START";
-const MARKER_END = "WPIFY:STATE:END -->";
+const MARKER_START = "<!-- TOWP:STATE:START";
+const MARKER_END = "TOWP:STATE:END -->";
 
 export function emptyDoc(sourceDir: string): MigrationDoc {
   const now = new Date().toISOString();
@@ -44,8 +44,9 @@ export function emptyDoc(sourceDir: string): MigrationDoc {
       plan: { status: "pending" },
       boot: { status: "pending" },
       theme: { status: "pending" },
-      plugin: { status: "pending" },
       normalize: { status: "pending" },
+      blockify: { status: "pending" },
+      plugin: { status: "pending" },
       import: { status: "pending" },
       verify: { status: "pending" },
       fix: { status: "pending" },

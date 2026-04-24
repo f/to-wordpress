@@ -354,7 +354,7 @@ function humanize(s: string): string {
 //
 //   - Known media-like shortcodes (figure / video / youtube) render as
 //     proper Gutenberg block comments that the WP editor recognizes.
-//   - Everything else becomes a WordPress shortcode `[wpify_<name> ... ]`,
+//   - Everything else becomes a WordPress shortcode `[towp_<name> ... ]`,
 //     and the set of shortcode names is persisted so the Plugin phase can
 //     register handlers for each one.
 //
@@ -483,13 +483,13 @@ function renderCalloutBlock(a: Record<string, string>, name: string): string {
   const body = a.text ?? a.body ?? a.content ?? "";
   return wpBlock(
     "group",
-    `<div class="wp-block-group wpify-callout wpify-callout--${attrEscape(color)}"><p><strong>${attrEscape(name.toUpperCase())}:</strong> ${attrEscape(body)}</p></div>`,
-    { className: `wpify-callout wpify-callout--${color}` },
+    `<div class="wp-block-group towp-callout towp-callout--${attrEscape(color)}"><p><strong>${attrEscape(name.toUpperCase())}:</strong> ${attrEscape(body)}</p></div>`,
+    { className: `towp-callout towp-callout--${color}` },
   );
 }
 
 function renderGenericShortcode(name: string, a: Record<string, string>): string {
-  const shortName = `wpify_${name}`;
+  const shortName = `towp_${name}`;
   const attrs = Object.entries(a)
     .map(([k, v]) => `${k}="${attrEscape(v)}"`)
     .join(" ");

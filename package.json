@@ -1,6 +1,6 @@
 {
   "name": "to-wordpress",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "Migrate anything text-shaped to WordPress — Jekyll, Hugo, Eleventy, Gatsby, Next, Astro, Hexo, Docusaurus, MkDocs, Ghost, WordPress WXR, Medium, Substack, Word docs, spreadsheets, PDFs, EPUBs, READMEs. Driven by GitHub Copilot CLI in a hybrid orchestration model and rendered as an Ink TUI.",
   "type": "module",
   "bin": {
@@ -18,8 +18,9 @@
     "dev": "tsup --watch",
     "start": "node dist/cli.js",
     "typecheck": "tsc --noEmit",
+    "test": "tsx test/agents.test.ts",
     "clean": "rm -rf dist",
-    "prepublishOnly": "npm run clean && npm run typecheck && npm run build"
+    "prepublishOnly": "npm run clean && npm run typecheck && npm run build && npm run test"
   },
   "engines": {
     "node": ">=20"
@@ -88,6 +89,7 @@
     "@types/node": "^25.6.0",
     "@types/react": "^19.2.14",
     "tsup": "^8.5.1",
+    "tsx": "^4.21.0",
     "typescript": "^6.0.3"
   }
 }

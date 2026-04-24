@@ -92,10 +92,10 @@ export async function runImport(ctx: MigrationContext, bus: UiBus): Promise<void
       featured_image_rel: featuredRel,
       layout,
       meta: {
-        _wpify_original_permalink: String(parsed.data.original_permalink ?? ""),
-        _wpify_source_path: String(parsed.data.source_path ?? ""),
-        _wpify_title_html: rawTitle,
-        ...(layout ? { _wpify_layout: layout } : {}),
+        _towp_original_permalink: String(parsed.data.original_permalink ?? ""),
+        _towp_source_path: String(parsed.data.source_path ?? ""),
+        _towp_title_html: rawTitle,
+        ...(layout ? { _towp_layout: layout } : {}),
       },
     });
   }
@@ -324,25 +324,25 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 // If anything below raises a fatal, at least say WHICH item we were on
 // instead of the user seeing an opaque "Allowed memory size exhausted".
-$GLOBALS['wpify_current_item'] = null;
+$GLOBALS['towp_current_item'] = null;
 register_shutdown_function( function () {
     $err = error_get_last();
     if ( $err && in_array( $err['type'], [ E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR ], true ) ) {
-        $slug = $GLOBALS['wpify_current_item']['slug'] ?? '?';
-        $type = $GLOBALS['wpify_current_item']['post_type'] ?? '?';
-        fwrite( STDERR, "\\nwpify FATAL while importing {$type} \\"{$slug}\\": {$err['message']} at {$err['file']}:{$err['line']}\\n" );
+        $slug = $GLOBALS['towp_current_item']['slug'] ?? '?';
+        $type = $GLOBALS['towp_current_item']['post_type'] ?? '?';
+        fwrite( STDERR, "\\ntowp FATAL while importing {$type} \\"{$slug}\\": {$err['message']} at {$err['file']}:{$err['line']}\\n" );
     }
 } );
 
 // Centralized per-item exception wrapper. Keeps the loop alive so one
 // bad post doesn't lose the other 99.
-$wpify_failures = [];
-function wpify_try( $label, callable $fn ) {
-    global $wpify_failures;
+$towp_failures = [];
+function towp_try( $label, callable $fn ) {
+    global $towp_failures;
     try {
         return $fn();
     } catch ( \\Throwable $e ) {
-        $wpify_failures[] = $label . ': ' . $e->getMessage();
+        $towp_failures[] = $label . ': ' . $e->getMessage();
         WP_CLI::warning( $label . ': ' . $e->getMessage() );
         return null;
     }
@@ -352,7 +352,7 @@ function wpify_try( $label, callable $fn ) {
 // Strip WordPress's default content so the migrated site is a faithful
 // replica of the source. Only touches well-known preset slugs; anything
 // the user or a previous run created stays put.
-wpify_try( 'preset cleanup', function () {
+towp_try( 'preset cleanup', function () {
     $preset_slugs = [ 'hello-world', 'sample-page', 'privacy-policy' ];
     foreach ( $preset_slugs as $s ) {
         foreach ( [ 'post', 'page' ] as $t ) {
@@ -386,12 +386,12 @@ if ( empty( $manifest['items'] ) || ! is_array( $manifest['items'] ) ) {
     WP_CLI::warning( 'manifest has no items to import' );
 }
 
-wpify_try( 'site_title', function () use ( $manifest ) {
+towp_try( 'site_title', function () use ( $manifest ) {
     if ( ! empty( $manifest['site_title'] ) ) {
         update_option( 'blogname', $manifest['site_title'] );
     }
 } );
-wpify_try( 'permalink_structure', function () use ( $manifest ) {
+towp_try( 'permalink_structure', function () use ( $manifest ) {
     if ( ! empty( $manifest['permalink_structure'] ) ) {
         update_option( 'permalink_structure', $manifest['permalink_structure'] );
     }
@@ -413,7 +413,7 @@ $media_skipped = 0;
 foreach ( (array) ( $manifest['media'] ?? [] ) as $m ) {
     if ( empty( $m['basename'] ) ) { $media_skipped++; continue; }
     $basename = (string) $m['basename'];
-    wpify_try( 'media:' . $basename, function () use ( $m, $media_dir, &$media_map, &$media_count, $basename ) {
+    towp_try( 'media:' . $basename, function () use ( $m, $media_dir, &$media_map, &$media_count, $basename ) {
         $source_file = $media_dir . '/' . $basename;
         if ( ! file_exists( $source_file ) ) {
             WP_CLI::warning( 'missing media: ' . $source_file );
@@ -421,7 +421,7 @@ foreach ( (array) ( $manifest['media'] ?? [] ) as $m ) {
         }
         $existing = get_posts( [
             'post_type'      => 'attachment',
-            'meta_key'       => '_wpify_media_basename',
+            'meta_key'       => '_towp_media_basename',
             'meta_value'     => $basename,
             'posts_per_page' => 1,
             'fields'         => 'ids',
@@ -442,7 +442,7 @@ foreach ( (array) ( $manifest['media'] ?? [] ) as $m ) {
             WP_CLI::warning( 'failed media: ' . $basename . ': ' . $attachment_id->get_error_message() );
             return;
         }
-        update_post_meta( $attachment_id, '_wpify_media_basename', $basename );
+        update_post_meta( $attachment_id, '_towp_media_basename', $basename );
         $media_map[ $basename ] = (int) $attachment_id;
         $media_count++;
     } );
@@ -450,7 +450,7 @@ foreach ( (array) ( $manifest['media'] ?? [] ) as $m ) {
 WP_CLI::log( 'media: ' . $media_count . ' imported, ' . $media_skipped . ' skipped, ' . count( $media_map ) . ' total mapped' );
 
 $user_map = [];
-function wpify_ensure_user( $login, $email ) {
+function towp_ensure_user( $login, $email ) {
     if ( ! $login ) { return 0; }
     $user = get_user_by( 'login', $login );
     if ( $user ) { return (int) $user->ID; }
@@ -466,7 +466,7 @@ function wpify_ensure_user( $login, $email ) {
     return is_wp_error( $uid ) ? 0 : (int) $uid;
 }
 
-function wpify_ensure_terms( $names, $taxonomy ) {
+function towp_ensure_terms( $names, $taxonomy ) {
     $ids = [];
     foreach ( $names as $name ) {
         $name = trim( (string) $name );
@@ -482,7 +482,7 @@ function wpify_ensure_terms( $names, $taxonomy ) {
     return $ids;
 }
 
-function wpify_rewrite_media_refs( $content, $media_map ) {
+function towp_rewrite_media_refs( $content, $media_map ) {
     return preg_replace_callback(
         '/media:([^)\\s"\\\']+)/',
         function ( $m ) use ( $media_map ) {
@@ -518,13 +518,13 @@ foreach ( (array) ( $manifest['items'] ?? [] ) as $item_idx => $item ) {
         $post_type = 'post';
     }
 
-    $GLOBALS['wpify_current_item'] = [ 'slug' => $slug, 'post_type' => $post_type ];
+    $GLOBALS['towp_current_item'] = [ 'slug' => $slug, 'post_type' => $post_type ];
 
-    $result = wpify_try( 'item:' . $post_type . ':' . $slug, function () use ( $item, $slug, $post_type, $media_map, &$created, &$updated ) {
+    $result = towp_try( 'item:' . $post_type . ':' . $slug, function () use ( $item, $slug, $post_type, $media_map, &$created, &$updated ) {
         $existing = get_page_by_path( $slug, OBJECT, $post_type );
-        $content = wpify_rewrite_media_refs( isset( $item['content'] ) ? (string) $item['content'] : '', $media_map );
+        $content = towp_rewrite_media_refs( isset( $item['content'] ) ? (string) $item['content'] : '', $media_map );
         $author_id = isset( $item['author_login'] ) && $item['author_login']
-            ? wpify_ensure_user( (string) $item['author_login'], isset( $item['author_email'] ) ? (string) $item['author_email'] : '' )
+            ? towp_ensure_user( (string) $item['author_login'], isset( $item['author_email'] ) ? (string) $item['author_email'] : '' )
             : 0;
         $date_str = isset( $item['date'] ) ? (string) $item['date'] : '';
         $ts = $date_str ? strtotime( $date_str ) : false;
@@ -558,7 +558,7 @@ foreach ( (array) ( $manifest['items'] ?? [] ) as $item_idx => $item ) {
         // Terms: only set when the taxonomy is actually registered for
         // this post type — otherwise wp_set_object_terms will warn.
         if ( ! empty( $item['categories'] ) && taxonomy_exists( 'category' ) ) {
-            $cat_ids = wpify_ensure_terms( (array) $item['categories'], 'category' );
+            $cat_ids = towp_ensure_terms( (array) $item['categories'], 'category' );
             if ( $cat_ids ) { wp_set_object_terms( $post_id, $cat_ids, 'category', false ); }
         }
         if ( ! empty( $item['tags'] ) && taxonomy_exists( 'post_tag' ) ) {
@@ -584,12 +584,12 @@ foreach ( (array) ( $manifest['items'] ?? [] ) as $item_idx => $item ) {
         return $post_id;
     } );
     if ( $result === null ) { $skipped++; }
-    $GLOBALS['wpify_current_item'] = null;
+    $GLOBALS['towp_current_item'] = null;
 }
 WP_CLI::log( 'items: ' . $created . ' created, ' . $updated . ' updated, ' . $skipped . ' skipped' );
 
 // ── Front page / blog / privacy settings ──────────────────────────────
-wpify_try( 'front_page', function () use ( $manifest ) {
+towp_try( 'front_page', function () use ( $manifest ) {
     if ( empty( $manifest['front_page_slug'] ) ) { return; }
     $home = get_page_by_path( sanitize_title( $manifest['front_page_slug'] ), OBJECT, 'page' );
     if ( $home ) {
@@ -599,7 +599,7 @@ wpify_try( 'front_page', function () use ( $manifest ) {
     }
 } );
 
-wpify_try( 'blog_index', function () use ( $manifest ) {
+towp_try( 'blog_index', function () use ( $manifest ) {
     if ( ! empty( $manifest['blog_index_page_slug'] ) ) {
         $blog = get_page_by_path( sanitize_title( $manifest['blog_index_page_slug'] ), OBJECT, 'page' );
         if ( $blog ) {
@@ -611,7 +611,7 @@ wpify_try( 'blog_index', function () use ( $manifest ) {
     }
 } );
 
-wpify_try( 'privacy_page', function () use ( $manifest ) {
+towp_try( 'privacy_page', function () use ( $manifest ) {
     if ( empty( $manifest['privacy_page_slug'] ) ) { return; }
     $priv = get_page_by_path( sanitize_title( $manifest['privacy_page_slug'] ), OBJECT, 'page' );
     if ( $priv ) {
@@ -621,7 +621,7 @@ wpify_try( 'privacy_page', function () use ( $manifest ) {
 } );
 
 // ── Page templates ────────────────────────────────────────────────────
-wpify_try( 'page_templates', function () use ( $manifest ) {
+towp_try( 'page_templates', function () use ( $manifest ) {
     $theme_dir = get_stylesheet_directory();
     foreach ( (array) ( $manifest['items'] ?? [] ) as $it ) {
         if ( empty( $it['layout'] ) || ( $it['post_type'] ?? '' ) !== 'page' ) { continue; }
@@ -642,7 +642,7 @@ wpify_try( 'page_templates', function () use ( $manifest ) {
 } );
 
 // ── Primary nav menu ──────────────────────────────────────────────────
-wpify_try( 'primary_menu', function () use ( $manifest ) {
+towp_try( 'primary_menu', function () use ( $manifest ) {
     if ( empty( $manifest['menu_items'] ) || ! is_array( $manifest['menu_items'] ) ) { return; }
     $menu_name = 'Primary';
     $menu = wp_get_nav_menu_object( $menu_name );
@@ -691,15 +691,15 @@ wpify_try( 'primary_menu', function () use ( $manifest ) {
     WP_CLI::log( 'primary menu populated with ' . count( $manifest['menu_items'] ) . ' top-level items' );
 } );
 
-wpify_try( 'flush_rewrite_rules', function () { flush_rewrite_rules( false ); } );
+towp_try( 'flush_rewrite_rules', function () { flush_rewrite_rules( false ); } );
 
-if ( ! empty( $wpify_failures ) ) {
-    WP_CLI::warning( sprintf( 'import completed with %d non-fatal failures', count( $wpify_failures ) ) );
-    foreach ( array_slice( $wpify_failures, 0, 20 ) as $f ) {
+if ( ! empty( $towp_failures ) ) {
+    WP_CLI::warning( sprintf( 'import completed with %d non-fatal failures', count( $towp_failures ) ) );
+    foreach ( array_slice( $towp_failures, 0, 20 ) as $f ) {
         WP_CLI::log( '  - ' . $f );
     }
-    if ( count( $wpify_failures ) > 20 ) {
-        WP_CLI::log( '  … ' . ( count( $wpify_failures ) - 20 ) . ' more' );
+    if ( count( $towp_failures ) > 20 ) {
+        WP_CLI::log( '  … ' . ( count( $towp_failures ) - 20 ) . ' more' );
     }
 }
 

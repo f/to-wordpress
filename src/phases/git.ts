@@ -27,7 +27,7 @@ async function git(ctx: MigrationContext, args: string[], timeoutMs = 60_000): P
 /**
  * A directory counts as "a repo" for our purposes only when its OWN root is
  * the git top-level. If the dir is nested inside somebody else's checkout
- * (e.g. a fixture inside the wpify monorepo) we treat it as a fresh folder
+ * (e.g. a fixture inside the towp monorepo) we treat it as a fresh folder
  * so we don't accidentally commit to the outer repo.
  */
 async function isOwnRepo(ctx: MigrationContext): Promise<boolean> {
@@ -99,11 +99,11 @@ export async function setupGit(
   await ensureUserIdentity(ctx, bus);
 
   // Capture any pre-existing state as a pinned baseline before branching so
-  // we can always diff "wpify's work" against "the user's starting point".
+  // we can always diff "towp's work" against "the user's starting point".
   await git(ctx, ["add", "-A"]);
   const preStatus = await git(ctx, ["status", "--porcelain"]);
   if (preStatus.stdout.trim()) {
-    const preCommit = await git(ctx, ["commit", "-m", "wpify: pre-migration snapshot"]);
+    const preCommit = await git(ctx, ["commit", "-m", "towp: pre-migration snapshot"]);
     if (preCommit.exitCode === 0) {
       bus.pushStreamEvent(undefined, {
         type: "info",
@@ -124,7 +124,7 @@ export async function setupGit(
   } else {
     const headOk = await git(ctx, ["rev-parse", "--verify", "HEAD"]);
     if (headOk.exitCode !== 0) {
-      await git(ctx, ["commit", "--allow-empty", "-m", "wpify: empty root"]);
+      await git(ctx, ["commit", "--allow-empty", "-m", "towp: empty root"]);
     }
     await git(ctx, ["checkout", "-b", branch]);
     bus.pushStreamEvent(undefined, {
@@ -155,7 +155,7 @@ export async function commitPhase(
   await git(ctx, ["add", "-A"]);
   const status = await git(ctx, ["status", "--porcelain"]);
   if (!status.stdout.trim()) return;
-  const msg = `wpify: ${phaseLabel}`;
+  const msg = `towp: ${phaseLabel}`;
   const commit = await git(ctx, ["commit", "-m", msg]);
   if (commit.exitCode === 0) {
     const sha = (await git(ctx, ["rev-parse", "--short", "HEAD"])).stdout.trim();

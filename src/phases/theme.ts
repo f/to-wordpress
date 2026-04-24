@@ -2,7 +2,7 @@ import { cp, mkdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { MigrationContext } from "../types.js";
-import { runCopilot } from "../copilot/run.js";
+import { runCopilot } from "../agents/index.js";
 import { interpolate, loadPrompt } from "../prompts/index.js";
 import type { UiBus } from "../tui/bus.js";
 import { readSample, runPrerender, type PrerenderResult } from "./prerender.js";

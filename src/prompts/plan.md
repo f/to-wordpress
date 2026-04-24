@@ -37,7 +37,7 @@ that later phases can execute without guessing.
 ## Required output
 
 Fill in every one of these headings **above** the
-`<!-- WPIFY:STATE:START` marker, in this order, and keep the JSON state
+`<!-- TOWP:STATE:START` marker, in this order, and keep the JSON state
 block below the marker byte-for-byte untouched:
 
 ### 1. Overview
@@ -103,8 +103,8 @@ category page at `/category/<slug>/` returns 200").
 
 ## Rules
 
-- Do not change anything between the `WPIFY:STATE:START` and
-  `WPIFY:STATE:END` markers, including whitespace. The CLI reads that
+- Do not change anything between the `TOWP:STATE:START` and
+  `TOWP:STATE:END` markers, including whitespace. The CLI reads that
   block back as JSON.
 - Do not create a new file. Do not touch the theme, plugin, or content
   directories — those are owned by later phases.

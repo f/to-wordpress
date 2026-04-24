@@ -64,7 +64,7 @@ checklist at the bottom.
 ### `plan`
 
 - Did Copilot fail to write `WORDPRESS_MIGRATION.md`? Make sure the
-  file exists and has the `<!-- WPIFY:STATE:START --> { … } <!-- END -->`
+  file exists and has the `<!-- TOWP:STATE:START --> { … } <!-- END -->`
   JSON block. Rewrite only the missing section.
 
 ### `boot`
@@ -104,7 +104,7 @@ checklist at the bottom.
   full rebuild. Verify in-container with
   `npx @wordpress/env run cli -- ls wp-content/to-wordpress/`.
 - "PHP Fatal error" while importing item `<slug>`: open
-  `{{WORK_DIR}}/import.php` around the reported line; the `wpify_try`
+  `{{WORK_DIR}}/import.php` around the reported line; the `towp_try`
   wrapper already catches most throws — add the missing guard if a
   new edge case leaked through.
 - CPT not registered: ensure the plugin is active

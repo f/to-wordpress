@@ -16,6 +16,7 @@ import { runBoot } from "./boot.js";
 import { runTheme } from "./theme.js";
 import { runPlugin } from "./plugin.js";
 import { runNormalize } from "./normalize.js";
+import { runBlockify } from "./blockify.js";
 import { runImport } from "./import.js";
 import { runVerify, type VerifyReport } from "./verify.js";
 import { wpCli } from "../wp/wpEnv.js";
@@ -270,6 +271,79 @@ export function normalizeLoop(ctx: MigrationContext, bus: UiBus): PhaseLoop<Simp
         }
       } catch (err) {
         issues.push(`index.json parse error: ${(err as Error).message}`);
+      }
+
+      return { ok: issues.length === 0, issues };
+    },
+    isOk: (r) => r.ok,
+    describeIssues: (r) => r.issues.join("; "),
+    async buildFixPrompt() {
+      return undefined;
+    },
+  };
+}
+
+// ─── blockify ─────────────────────────────────────────────────────────
+
+export function blockifyLoop(
+  ctx: MigrationContext,
+  bus: UiBus,
+  skip: boolean,
+): PhaseLoop<SimpleReport> {
+  return {
+    phase: "blockify",
+    skip,
+    async attempt() {
+      await runBlockify(ctx, bus);
+    },
+    async test() {
+      const issues: string[] = [];
+      const shortcodesPath = join(ctx.workDir, "shortcodes.json");
+      if (!existsSync(shortcodesPath)) return { ok: true, issues };
+
+      let shortcodes: string[] = [];
+      try {
+        const raw = await readFile(shortcodesPath, "utf8");
+        const parsed = JSON.parse(raw) as { shortcodes?: string[] };
+        shortcodes = parsed.shortcodes ?? [];
+      } catch {
+        return { ok: true, issues };
+      }
+      if (shortcodes.length === 0) return { ok: true, issues };
+
+      const blocksManifestPath = join(ctx.workDir, "blocks.json");
+      if (!existsSync(blocksManifestPath)) {
+        issues.push("blocks.json manifest missing");
+        return { ok: false, issues };
+      }
+
+      try {
+        const manifest = JSON.parse(await readFile(blocksManifestPath, "utf8")) as {
+          blocks?: Array<{ slug: string; dir: string }>;
+        };
+        const generated = new Set((manifest.blocks ?? []).map((b) => b.slug));
+        for (const name of shortcodes) {
+          if (!generated.has(name)) issues.push(`block missing for shortcode: ${name}`);
+          const blockJson = join(ctx.pluginDir, "blocks", name, "block.json");
+          if (!existsSync(blockJson)) {
+            issues.push(`block.json missing: blocks/${name}/block.json`);
+            continue;
+          }
+          try {
+            const bj = JSON.parse(await readFile(blockJson, "utf8")) as { apiVersion?: number };
+            if (bj.apiVersion !== 3) {
+              issues.push(`blocks/${name}/block.json must use apiVersion 3`);
+            }
+          } catch {
+            issues.push(`blocks/${name}/block.json is not valid JSON`);
+          }
+          const renderPhp = join(ctx.pluginDir, "blocks", name, "render.php");
+          if (!existsSync(renderPhp)) {
+            issues.push(`blocks/${name}/render.php missing`);
+          }
+        }
+      } catch (err) {
+        issues.push(`blocks.json parse error: ${(err as Error).message}`);
       }
 
       return { ok: issues.length === 0, issues };

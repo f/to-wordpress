@@ -18,7 +18,14 @@ import {
 import { runFresh } from "./phases/fresh.js";
 import { setupGit } from "./phases/git.js";
 import { computeEta } from "./phases/eta.js";
-import { DEFAULT_COPILOT_MODEL, DEFAULT_COPILOT_EFFORT } from "./copilot/run.js";
+import {
+  DEFAULT_AGENT,
+  DEFAULT_CLAUDE_MODEL,
+  DEFAULT_CODEX_MODEL,
+  DEFAULT_COPILOT_EFFORT,
+  DEFAULT_COPILOT_MODEL,
+  type AgentKind,
+} from "./agents/index.js";
 import { runAgenticLoop, type FailStrategy } from "./phases/loop.js";
 import {
   detectLoop,
@@ -27,15 +34,17 @@ import {
   themeLoop,
   pluginLoop,
   normalizeLoop,
+  blockifyLoop,
   importLoop,
   verifyLoop,
   testfixLoop,
 } from "./phases/loops.js";
 import type { PhaseStatus } from "./types.js";
 
-const PACKAGE_VERSION = "0.4.2";
+const PACKAGE_VERSION = "0.5.0";
 
 interface CliOptions {
+  agent?: AgentKind;
   skipBoot?: boolean;
   skipCopilot?: boolean;
   only?: string;
@@ -64,8 +73,9 @@ const PHASE_ORDER: PhaseId[] = [
   "plan",
   "boot",
   "theme",
-  "plugin",
   "normalize",
+  "blockify",
+  "plugin",
   "import",
   "verify",
   "testfix",
@@ -81,8 +91,9 @@ async function main(): Promise<void> {
     .option("--fresh", "tear down previous wp-env containers + volumes and wipe WORDPRESS_MIGRATION/ before starting")
     .option("--branch <name>", "git branch to create and commit migration work on", "to-wordpress")
     .option("--no-git", "disable automatic git init / branching / per-phase commits")
+    .option("--agent <kind>", "which AI agent CLI to use: claude|copilot|codex (env: TOWP_AGENT)", DEFAULT_AGENT)
     .option("--skip-boot", "skip wp-env start (assumes already running)")
-    .option("--skip-copilot", "use deterministic fallbacks only, don't invoke copilot")
+    .option("--skip-copilot", "use deterministic fallbacks only, don't invoke the AI agent")
     .option("-y, --yes", "headless mode (no TUI, log to stdout)")
     .option("--only <phase>", "run only this phase (skips all others)")
     .option("--from <phase>", "start from this phase (skip earlier ones)")
@@ -185,11 +196,30 @@ async function main(): Promise<void> {
   const gitEnabled = opts.git !== false;
   const failStrategy = (opts.failStrategy ?? "continue") as FailStrategy;
 
+  // Propagate agent selection via env so every phase invocation sees it
+  // (resolveAgent in src/agents/index.ts reads TOWP_AGENT on every call).
+  const requested = opts.agent ?? DEFAULT_AGENT;
+  const agentKind: AgentKind =
+    requested === "copilot" || requested === "codex" ? requested : "claude";
+  process.env.TOWP_AGENT = agentKind;
+
   if (!opts.skipCopilot) {
+    const model =
+      agentKind === "claude"
+        ? DEFAULT_CLAUDE_MODEL
+        : agentKind === "codex"
+          ? (DEFAULT_CODEX_MODEL || "(codex default)")
+          : DEFAULT_COPILOT_MODEL;
+    const extras =
+      agentKind === "claude"
+        ? "(override with --model / CLAUDE_MODEL)"
+        : agentKind === "codex"
+          ? "(override with --model / CODEX_MODEL)"
+          : `effort: ${DEFAULT_COPILOT_EFFORT} (override with --model / COPILOT_MODEL, --effort / COPILOT_EFFORT)`;
     bus.pushStreamEvent(undefined, {
       type: "info",
       phase: "detect",
-      message: `Copilot model: ${DEFAULT_COPILOT_MODEL} · effort: ${DEFAULT_COPILOT_EFFORT} (override with --model / COPILOT_MODEL, --effort / COPILOT_EFFORT)`,
+      message: `Agent: ${agentKind} · model: ${model} · ${extras}`,
     });
   }
 
@@ -257,8 +287,9 @@ async function main(): Promise<void> {
     await step(planLoop(ctx, bus));
     await step(bootLoop(ctx, bus, Boolean(opts.skipBoot)));
     await step(themeLoop(ctx, bus, Boolean(opts.skipCopilot)));
-    await step(pluginLoop(ctx, bus, Boolean(opts.skipCopilot)));
     await step(normalizeLoop(ctx, bus));
+    await step(blockifyLoop(ctx, bus, Boolean(opts.skipCopilot)));
+    await step(pluginLoop(ctx, bus, Boolean(opts.skipCopilot)));
     await step(importLoop(ctx, bus));
     await step(verifyLoop(ctx, bus));
     await step(testfixLoop(ctx, bus, Boolean(opts.skipBoot)));

@@ -309,50 +309,53 @@ add_action( 'init', function () {
 } );
 ```
 
-### Shortcodes (`shortcodes.php`)
+### Shortcodes (`shortcodes.php`) — legacy fallback only
 
-Port each `_source_includes/shortcodes/*.html` Liquid template to a PHP
-callback. The normalize phase rewrites every Liquid `{% include %}` into
-`[wpify_<name> ...]` shortcode syntax, so **every name below** MUST be
-registered:
+The **blockify phase** converted every discovered source shortcode into
+a proper Gutenberg block, and content files now use block markup
+directly. Shortcode handlers are therefore only a legacy fallback for:
 
-```json
-{{SHORTCODES_JSON}}
-```
+- Hand-written posts a user adds later that still use bracket syntax.
+- Backward compatibility if a user pastes old content into the editor.
 
-{{SHORTCODES_LIST}}
-
-Template:
+If **`{{SHORTCODES_JSON}}`** is non-empty, register a minimal
+`shortcodes.php` that delegates to the already-registered blocks:
 
 ```php
 <?php
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
+/**
+ * Legacy shortcode handlers that render through the corresponding block
+ * (registered by includes/blocks.php). Keeps old post content usable
+ * while the canonical format is the block itself.
+ */
 add_action( 'init', function () {
-    add_shortcode( 'wpify_figure', function ( $atts, $content = null ) {
-        $atts = shortcode_atts( [
-            'src'     => '',
-            'alt'     => '',
-            'caption' => '',
-            'class'   => '',
-        ], $atts, 'wpify_figure' );
-
-        if ( ! $atts['src'] ) { return ''; }
-
-        $classes = trim( 'wp-block-image ' . $atts['class'] );
-        return sprintf(
-            '<figure class="%s"><img src="%s" alt="%s" />%s</figure>',
-            esc_attr( $classes ),
-            esc_url( $atts['src'] ),
-            esc_attr( $atts['alt'] ),
-            $atts['caption'] ? '<figcaption>' . esc_html( $atts['caption'] ) . '</figcaption>' : ''
-        );
-    } );
+    $names = [ {{SHORTCODES_LIST_PHP}} ];
+    foreach ( $names as $name ) {
+        add_shortcode( 'towp_' . $name, function ( $atts, $content = null ) use ( $name ) {
+            $atts = is_array( $atts ) ? $atts : [];
+            $block = render_block( [
+                'blockName' => '{{PLUGIN_SLUG}}/' . $name,
+                'attrs'     => $atts,
+                'innerBlocks'   => [],
+                'innerHTML'     => (string) $content,
+                'innerContent'  => [ (string) $content ],
+            ] );
+            return is_string( $block ) ? $block : '';
+        } );
+    }
 } );
 ```
 
-**Every attribute in every shortcode must be escaped on output.** Never
-echo raw attribute values.
+Shortcode names that need handlers:
+
+{{SHORTCODES_LIST}}
+
+**Every attribute output from any shortcode callback must be escaped** —
+but prefer using `render_block()` above so the escaping happens inside
+the block's `render.php` (which the blockify phase already wrote
+correctly).
 
 ### REST routes (`rest-api.php`)
 
@@ -521,16 +524,24 @@ delete_option( '{{PLUGIN_SLUG_UNDERSCORED}}_version' );
 // Do NOT delete posts, pages, or media — those belong to the site.
 ```
 
-### Dynamic blocks (`blocks.php` + `blocks/`)
+### Dynamic blocks (`blocks.php`)
 
-Per https://developer.wordpress.org/block-editor/reference-guides/block-api/block-metadata/ — **apiVersion 3 is required** for WP 6.9+.
+The **blockify phase** already generated complete block definitions
+under `{{PLUGIN_DIR}}/blocks/<name>/` (each with `block.json` at
+apiVersion 3, `render.php`, `edit.js`, `style.css`, `editor.css`). Do
+**NOT** regenerate these — they are authoritative.
+
+Your only job in the plugin phase is to register them. `includes/blocks.php`:
 
 ```php
 <?php
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 add_action( 'init', function () {
-    foreach ( glob( plugin_dir_path( __FILE__ ) . '../blocks/*', GLOB_ONLYDIR ) as $block_dir ) {
+    $blocks_dir = plugin_dir_path( __FILE__ ) . '../blocks';
+    if ( ! is_dir( $blocks_dir ) ) { return; }
+
+    foreach ( (array) glob( $blocks_dir . '/*', GLOB_ONLYDIR ) as $block_dir ) {
         if ( file_exists( $block_dir . '/block.json' ) ) {
             register_block_type_from_metadata( $block_dir );
         }
@@ -538,22 +549,18 @@ add_action( 'init', function () {
 } );
 ```
 
-`blocks/<name>/block.json`:
+Per https://developer.wordpress.org/reference/functions/register_block_type_from_metadata/ — this single call is enough: WordPress reads `block.json`, registers scripts/styles, wires the render callback, and handles i18n automatically.
+
+The pre-generated blocks already cover this list:
 
 ```json
-{
-  "$schema": "https://schemas.wp.org/trunk/block.json",
-  "apiVersion": 3,
-  "name": "{{PLUGIN_SLUG}}/<name>",
-  "title": "...",
-  "category": "widgets",
-  "textdomain": "{{PLUGIN_SLUG}}",
-  "supports": { "html": false },
-  "render": "file:./render.php"
-}
+{{BLOCKS_JSON}}
 ```
 
-`blocks/<name>/render.php` — always use `get_block_wrapper_attributes()`.
+Do **not** touch the `blocks/` directory — those files are authoritative
+from the blockify phase. The only shortcode handlers you should write
+are the legacy-compatibility ones described below in the Shortcodes
+section.
 
 ---
 
@@ -593,7 +600,7 @@ User choices:
 
 ## Code-quality rules
 
-1. **Prefix everything**. Neutral helpers use `wpify_`; plugin-specific
+1. **Prefix everything**. Neutral helpers use `towp_`; plugin-specific
    functions, hooks, options, post meta keys, block names use
    `{{PLUGIN_SLUG_UNDERSCORED}}_`.
 2. **Every file** starts with `<?php` then `if ( ! defined( 'ABSPATH' ) ) { exit; }`.

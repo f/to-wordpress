@@ -2,33 +2,580 @@
 
 ## Phase: Pluginize
 
-Produce a single site-specific WordPress plugin that owns everything
-"non-theme" about the source site: custom post types, custom taxonomies,
-custom blocks/shortcodes, comments integration, newsletter, analytics,
-cookie banner, redirects map, **and every custom behavior from the source
-SSG's plugins**. These concerns must survive a theme change; they do NOT
-belong in the theme.
+Produce a single site-specific WordPress plugin targeting **WordPress
+6.9+** (PHP 7.2.24+) that owns everything "non-theme" about the source
+site: custom post types, taxonomies, custom blocks/shortcodes, comments
+integration, newsletter, analytics, cookie banner, redirects map, **AND
+every custom behavior from the source SSG's plugins** (generators,
+custom endpoints, alternate views). These concerns must survive a theme
+change — they do NOT belong in the theme.
+
+Follow the official Plugin Handbook: https://developer.wordpress.org/plugins/
+
+---
+
+## Non-negotiable: plugin structure
+
+Per https://developer.wordpress.org/plugins/plugin-basics/ — the main
+file MUST be a minimal bootstrap. ALL business logic lives in
+`includes/*.php` files loaded from the bootstrap.
+
+```
+{{PLUGIN_DIR}}/
+├── {{PLUGIN_SLUG}}.php      # Plugin header + require_once loop (ONLY)
+├── readme.txt               # Standard WP plugin readme
+├── uninstall.php            # Data cleanup on delete
+├── includes/
+│   ├── cpt.php              # register_post_type
+│   ├── taxonomies.php       # register_taxonomy
+│   ├── endpoints.php        # SSG plugin URL endpoints (e.g. /llm/)
+│   ├── generators.php       # Content transforms / alternate views
+│   ├── rest-api.php         # Custom REST routes
+│   ├── shortcodes.php       # add_shortcode
+│   ├── redirects.php        # template_redirect 301 map
+│   ├── options.php          # Settings API
+│   ├── newsletter.php       # If features.newsletterFormAction
+│   ├── comments-giscus.php  # If features.giscusRepo
+│   ├── analytics-ga.php     # If features.googleAnalyticsId
+│   ├── cookie-banner.php    # If features.cookieBanner
+│   ├── dark-mode.php        # If features.darkMode
+│   ├── social-meta.php      # If features.twitterSite
+│   └── blocks.php           # Dynamic blocks (optional)
+├── blocks/                  # Custom blocks (optional)
+│   └── <name>/
+│       ├── block.json       # apiVersion 3 + $schema
+│       ├── render.php
+│       └── style.css
+└── languages/               # Translations (if any)
+```
+
+### Bootstrap rules
+
+`{{PLUGIN_SLUG}}.php`:
+
+```php
+<?php
+/**
+ * Plugin Name: {{SITE_TITLE}} Site
+ * Plugin URI:
+ * Description: Site-specific plugin for {{SITE_TITLE}} — CPTs, shortcodes, analytics, redirects, endpoints, and other non-theme features migrated by to-wordpress.
+ * Version: 0.1.0
+ * Requires at least: 6.3
+ * Requires PHP: 7.4
+ * License: GPL-2.0-or-later
+ * Text Domain: {{PLUGIN_SLUG}}
+ */
+
+if ( ! defined( 'ABSPATH' ) ) { exit; }
+
+// Load every include file in deterministic order.
+foreach ( glob( plugin_dir_path( __FILE__ ) . 'includes/*.php' ) as $__inc ) {
+    require_once $__inc;
+}
+```
+
+**Forbidden in the bootstrap**: business logic, class definitions, hook
+callbacks, anything other than the header, `ABSPATH` guard, and the
+include loop. All code lives in `includes/*.php`.
+
+---
+
+## SSG Plugin Migration (CRITICAL)
+
+The source site ships SSG-level plugins that produce custom URLs and
+content transforms. **You MUST analyze each one and replicate its
+behavior in WordPress.** This is the single biggest gap in a typical
+Jekyll → WordPress migration.
+
+Source SSG plugin files:
+
+{{SSG_PLUGINS_SOURCE}}
+
+### Analysis procedure (for every file above)
+
+1. **Read the full source code.** Understand what it generates.
+2. **Identify the pattern**:
+
+| SSG pattern | WordPress equivalent |
+|---|---|
+| Generator that creates a parallel URL tree (e.g. `/llm/{slug}/` mirroring `/blog/{slug}/`) | `add_rewrite_rule` + `query_vars` filter + `template_include` filter |
+| Generator that creates category/tag index pages | Native taxonomy archives (plus rewrite rule if source uses custom URL pattern) |
+| Generator that creates data-driven pages from YAML/JSON | Custom REST route + page template, or a page with a dynamic block |
+| `content` transformation (syntax highlighting, markdown post-processing) | `the_content` filter |
+| Custom feed | `add_feed( 'slug', callback )` + callback outputs XML |
+| Custom front matter behavior | `register_meta` with `show_in_rest` + filter hooks |
+
+3. **Generate the WordPress file** in the correct `includes/<name>.php`.
+4. **Flush rewrite rules on activation** if you added rewrite rules.
+
+### Example: `/llm/` endpoint (raw-markdown view of posts)
+
+Jekyll plugins like `llm_generator.rb` build a synthetic `llm_posts`
+collection — one page per post at `/llm/{slug}/` that displays the raw
+markdown inside `<pre>` with `<context>` and `<instructions>` blocks for
+LLM consumption.
+
+The WordPress equivalent in `includes/endpoints.php`:
+
+```php
+<?php
+if ( ! defined( 'ABSPATH' ) ) { exit; }
+
+/**
+ * LLM view endpoint: /llm/{post-slug}/ renders a post's raw content
+ * in a format optimized for language model consumption.
+ */
+
+add_action( 'init', function () {
+    add_rewrite_rule(
+        '^llm/([^/]+)/?$',
+        'index.php?{{PLUGIN_SLUG_UNDERSCORED}}_llm_slug=$matches[1]',
+        'top'
+    );
+} );
+
+add_filter( 'query_vars', function ( $vars ) {
+    $vars[] = '{{PLUGIN_SLUG_UNDERSCORED}}_llm_slug';
+    return $vars;
+} );
+
+add_filter( 'template_include', function ( $template ) {
+    $slug = get_query_var( '{{PLUGIN_SLUG_UNDERSCORED}}_llm_slug' );
+    if ( ! $slug ) {
+        return $template;
+    }
+    $post = get_page_by_path( $slug, OBJECT, [ 'post', 'page' ] );
+    if ( ! $post ) {
+        status_header( 404 );
+        return get_404_template();
+    }
+    $plugin_template = plugin_dir_path( __FILE__ ) . '../templates/llm-view.php';
+    if ( file_exists( $plugin_template ) ) {
+        $GLOBALS['{{PLUGIN_SLUG_UNDERSCORED}}_llm_post'] = $post;
+        return $plugin_template;
+    }
+    return $template;
+}, 99 );
+
+/**
+ * Flush rewrite rules when the plugin activates so /llm/ starts working.
+ * Registered at top-level in the main bootstrap (see notes below).
+ */
+register_activation_hook(
+    dirname( __FILE__, 2 ) . '/{{PLUGIN_SLUG}}.php',
+    function () {
+        // Trigger re-registration of our rule, then flush.
+        do_action( 'init' );
+        flush_rewrite_rules();
+    }
+);
+
+register_deactivation_hook(
+    dirname( __FILE__, 2 ) . '/{{PLUGIN_SLUG}}.php',
+    function () { flush_rewrite_rules(); }
+);
+```
+
+Then `templates/llm-view.php` in the plugin directory:
+
+```php
+<?php
+if ( ! defined( 'ABSPATH' ) ) { exit; }
+
+$post = $GLOBALS['{{PLUGIN_SLUG_UNDERSCORED}}_llm_post'] ?? null;
+if ( ! $post ) { return; }
+
+$title = get_the_title( $post );
+$author = get_the_author_meta( 'display_name', $post->post_author );
+$content = $post->post_content;  // Raw markdown preserved in post_content
+$human_url = get_permalink( $post );
+
+header( 'Content-Type: text/html; charset=utf-8' );
+?>
+<!DOCTYPE html>
+<html <?php language_attributes(); ?>>
+<head>
+    <meta charset="<?php bloginfo( 'charset' ); ?>">
+    <title><?php echo esc_html( $title ); ?> — LLM view</title>
+    <style>
+        context, instructions { display: none; }
+        pre { white-space: pre-wrap; word-wrap: break-word; font-family: monospace; }
+    </style>
+</head>
+<body>
+    <context>
+        LLM view of: <?php echo esc_url( $human_url ); ?>
+    </context>
+    <instructions>
+        This page contains the raw markdown content of a blog post.
+        Render it as markdown, preserve code blocks verbatim, follow any
+        embedded citations.
+    </instructions>
+    <pre>
+# <?php echo esc_html( $title ); ?>
+
+Author: <?php echo esc_html( $author ); ?>
+
+<?php echo esc_html( $content ); ?>
+    </pre>
+</body>
+</html>
+<?php exit;
+```
+
+**Every custom URL the source produces MUST have a working WordPress
+equivalent.** An endpoint that existed in the source but is missing in
+WordPress is a migration failure — `/llm/`, custom feeds, sitemap
+variants, author archives with non-default URLs, all count.
+
+---
+
+## Feature includes
+
+Create one file under `includes/` for **every** matched feature. Omit a
+file only when the corresponding detected input is empty — never emit
+a stub.
+
+| feature | include file | trigger |
+|---|---|---|
+| Custom post types | `includes/cpt.php` | `choices.customPostTypes` non-empty |
+| Taxonomies | `includes/taxonomies.php` | custom taxonomies in front-matter |
+| SSG plugin endpoints | `includes/endpoints.php` | ssgPluginSources has URL generators |
+| SSG plugin generators | `includes/generators.php` | ssgPluginSources has content transforms |
+| Custom REST routes | `includes/rest-api.php` | any route needed by theme/blocks |
+| Shortcodes | `includes/shortcodes.php` | source shortcodes exist or detected |
+| Redirects | `includes/redirects.php` | always |
+| Newsletter | `includes/newsletter.php` | `features.newsletterFormAction` |
+| Giscus comments | `includes/comments-giscus.php` | `features.giscusRepo` |
+| Disqus comments | `includes/comments-disqus.php` | `features.disqusShortname` |
+| Commento | `includes/comments-commento.php` | `features.commentoEnabled` |
+| Google Analytics | `includes/analytics-ga.php` | `features.googleAnalyticsId` |
+| Google Tag Manager | `includes/analytics-gtm.php` | `features.gtmId` |
+| Plausible | `includes/analytics-plausible.php` | `features.plausibleDomain` |
+| Umami | `includes/analytics-umami.php` | `features.umamiWebsiteId` |
+| Cookie banner | `includes/cookie-banner.php` | `features.cookieBanner` |
+| Dark mode | `includes/dark-mode.php` | `features.darkMode` |
+| Social meta | `includes/social-meta.php` | `features.twitterSite` or similar |
+| Options page | `includes/options.php` | always |
+| Dynamic blocks | `includes/blocks.php` + `blocks/<name>/` | if custom blocks needed |
+
+---
+
+## Per-feature implementation rules
+
+### Custom post types (`cpt.php`)
+
+Per https://developer.wordpress.org/reference/functions/register_post_type/:
+
+```php
+<?php
+if ( ! defined( 'ABSPATH' ) ) { exit; }
+
+add_action( 'init', function () {
+    register_post_type( 'my_cpt', [
+        'labels'        => [
+            'name'          => __( 'Items', '{{PLUGIN_SLUG}}' ),
+            'singular_name' => __( 'Item', '{{PLUGIN_SLUG}}' ),
+            // ... full labels array
+        ],
+        'public'        => true,
+        'show_in_rest'  => true,   // Enable block editor + REST API
+        'has_archive'   => true,
+        'supports'      => [ 'title', 'editor', 'excerpt', 'thumbnail',
+                              'custom-fields', 'author', 'comments',
+                              'revisions' ],
+        'rewrite'       => [ 'slug' => '<pathPrefix>', 'with_front' => false ],
+        'menu_icon'     => 'dashicons-...',
+    ] );
+} );
+```
+
+Do **not** flush rewrite rules inside this function. Let the activation
+hook (in the bootstrap or in `includes/endpoints.php`) handle it.
+
+### Taxonomies (`taxonomies.php`)
+
+```php
+<?php
+if ( ! defined( 'ABSPATH' ) ) { exit; }
+
+add_action( 'init', function () {
+    register_taxonomy( 'my_category', [ 'my_cpt' ], [
+        'hierarchical'     => true,
+        'show_in_rest'     => true,
+        'labels'           => [ /* ... */ ],
+        'rewrite'          => [ 'slug' => 'my-category' ],
+    ] );
+} );
+```
+
+### Shortcodes (`shortcodes.php`)
+
+Port each `_source_includes/shortcodes/*.html` Liquid template to a PHP
+callback. The normalize phase rewrites every Liquid `{% include %}` into
+`[wpify_<name> ...]` shortcode syntax, so **every name below** MUST be
+registered:
+
+```json
+{{SHORTCODES_JSON}}
+```
+
+{{SHORTCODES_LIST}}
+
+Template:
+
+```php
+<?php
+if ( ! defined( 'ABSPATH' ) ) { exit; }
+
+add_action( 'init', function () {
+    add_shortcode( 'wpify_figure', function ( $atts, $content = null ) {
+        $atts = shortcode_atts( [
+            'src'     => '',
+            'alt'     => '',
+            'caption' => '',
+            'class'   => '',
+        ], $atts, 'wpify_figure' );
+
+        if ( ! $atts['src'] ) { return ''; }
+
+        $classes = trim( 'wp-block-image ' . $atts['class'] );
+        return sprintf(
+            '<figure class="%s"><img src="%s" alt="%s" />%s</figure>',
+            esc_attr( $classes ),
+            esc_url( $atts['src'] ),
+            esc_attr( $atts['alt'] ),
+            $atts['caption'] ? '<figcaption>' . esc_html( $atts['caption'] ) . '</figcaption>' : ''
+        );
+    } );
+} );
+```
+
+**Every attribute in every shortcode must be escaped on output.** Never
+echo raw attribute values.
+
+### REST routes (`rest-api.php`)
+
+Per https://developer.wordpress.org/rest-api/extending-the-rest-api/adding-custom-endpoints/:
+
+```php
+<?php
+if ( ! defined( 'ABSPATH' ) ) { exit; }
+
+add_action( 'rest_api_init', function () {
+    register_rest_route( '{{PLUGIN_SLUG}}/v1', '/data/(?P<key>[a-z0-9_-]+)', [
+        'methods'             => WP_REST_Server::READABLE,
+        'permission_callback' => '__return_true',
+        'args'                => [
+            'key' => [
+                'required'          => true,
+                'validate_callback' => function ( $v ) { return is_string( $v ) && preg_match( '/^[a-z0-9_-]+$/', $v ); },
+                'sanitize_callback' => 'sanitize_key',
+            ],
+        ],
+        'callback'            => function ( WP_REST_Request $req ) {
+            $key = $req->get_param( 'key' );
+            $data = get_option( '{{PLUGIN_SLUG_UNDERSCORED}}_data_' . $key );
+            if ( ! $data ) {
+                return new WP_Error( 'not_found', 'Not found', [ 'status' => 404 ] );
+            }
+            return rest_ensure_response( $data );
+        },
+    ] );
+} );
+```
+
+**Rules**:
+
+- Always provide `permission_callback` (use `__return_true` for public).
+- Always validate + sanitize `args`.
+- Return `WP_Error` with `status` for errors, `rest_ensure_response()`
+  for success.
+- Use unique namespace `{{PLUGIN_SLUG}}/v1` — never `wp/*`.
+
+### Redirects (`redirects.php`)
+
+```php
+<?php
+if ( ! defined( 'ABSPATH' ) ) { exit; }
+
+add_action( 'template_redirect', function () {
+    if ( is_user_logged_in() && current_user_can( 'manage_options' ) ) {
+        return;
+    }
+    $file = dirname( __FILE__, 2 ) . '/../redirects.json';
+    if ( ! file_exists( $file ) ) { return; }
+    $map = json_decode( file_get_contents( $file ), true );
+    if ( ! is_array( $map ) ) { return; }
+    $path = rtrim( wp_parse_url( add_query_arg( [] ), PHP_URL_PATH ), '/' ) . '/';
+    if ( isset( $map[ $path ] ) ) {
+        wp_safe_redirect( home_url( $map[ $path ] ), 301 );
+        exit;
+    }
+} );
+```
+
+### Options page / Settings API (`options.php`)
+
+Per https://developer.wordpress.org/plugins/settings/settings-api/:
+
+```php
+<?php
+if ( ! defined( 'ABSPATH' ) ) { exit; }
+
+add_action( 'admin_menu', function () {
+    add_options_page(
+        __( '{{SITE_TITLE}} Settings', '{{PLUGIN_SLUG}}' ),
+        __( '{{SITE_TITLE}}', '{{PLUGIN_SLUG}}' ),
+        'manage_options',
+        '{{PLUGIN_SLUG_UNDERSCORED}}_settings',
+        '{{PLUGIN_SLUG_UNDERSCORED}}_render_settings_page'
+    );
+} );
+
+add_action( 'admin_init', function () {
+    register_setting(
+        '{{PLUGIN_SLUG_UNDERSCORED}}_settings_group',
+        '{{PLUGIN_SLUG_UNDERSCORED}}_options',
+        [ 'sanitize_callback' => '{{PLUGIN_SLUG_UNDERSCORED}}_sanitize_options' ]
+    );
+    add_settings_section( '{{PLUGIN_SLUG_UNDERSCORED}}_main', __( 'Main', '{{PLUGIN_SLUG}}' ), '__return_false', '{{PLUGIN_SLUG_UNDERSCORED}}_settings' );
+    add_settings_field(
+        'ga_id',
+        __( 'Google Analytics ID', '{{PLUGIN_SLUG}}' ),
+        '{{PLUGIN_SLUG_UNDERSCORED}}_field_ga_id',
+        '{{PLUGIN_SLUG_UNDERSCORED}}_settings',
+        '{{PLUGIN_SLUG_UNDERSCORED}}_main'
+    );
+} );
+
+function {{PLUGIN_SLUG_UNDERSCORED}}_sanitize_options( $input ) {
+    $out = [];
+    $out['ga_id'] = isset( $input['ga_id'] ) ? sanitize_text_field( wp_unslash( $input['ga_id'] ) ) : '';
+    return $out;
+}
+
+function {{PLUGIN_SLUG_UNDERSCORED}}_field_ga_id() {
+    $opts = get_option( '{{PLUGIN_SLUG_UNDERSCORED}}_options', [] );
+    printf(
+        '<input type="text" name="%s[ga_id]" value="%s" class="regular-text" />',
+        esc_attr( '{{PLUGIN_SLUG_UNDERSCORED}}_options' ),
+        esc_attr( $opts['ga_id'] ?? '' )
+    );
+}
+
+function {{PLUGIN_SLUG_UNDERSCORED}}_render_settings_page() {
+    if ( ! current_user_can( 'manage_options' ) ) { return; }
+    ?>
+    <div class="wrap">
+        <h1><?php esc_html_e( '{{SITE_TITLE}} Settings', '{{PLUGIN_SLUG}}' ); ?></h1>
+        <form method="post" action="options.php">
+            <?php
+            settings_fields( '{{PLUGIN_SLUG_UNDERSCORED}}_settings_group' );
+            do_settings_sections( '{{PLUGIN_SLUG_UNDERSCORED}}_settings' );
+            submit_button();
+            ?>
+        </form>
+    </div>
+    <?php
+}
+```
+
+**Rules** (from
+https://developer.wordpress.org/plugins/security/):
+
+- `register_setting()` with a `sanitize_callback`.
+- Every field display function uses `esc_attr()` / `esc_html()`.
+- Settings page render function checks `current_user_can()`.
+- The Settings API handles nonces automatically via `settings_fields()`.
+
+### Security baseline (every feature)
+
+Per https://developer.wordpress.org/apis/security/nonces/:
+
+- **Nonces prevent CSRF, not authorization.** Always pair with
+  `current_user_can()`.
+- Never process `$_POST` / `$_GET` wholesale. Read explicit keys.
+- Use `wp_unslash()` before sanitizing.
+- SQL: use `$wpdb->prepare()`. Never concatenate user input.
+- Escape on output: `esc_html`, `esc_attr`, `esc_url`, `wp_kses_post`.
+
+### Activation / deactivation / uninstall
+
+Per https://developer.wordpress.org/plugins/plugin-basics/activation-deactivation-hooks/:
+
+- Register hooks at **top-level** — not inside other hooks.
+- Flush rewrite rules only if your plugin registers rewrite rules.
+- Uninstall uses `uninstall.php` (runs only on plugin delete).
+
+`uninstall.php`:
+
+```php
+<?php
+if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) { exit; }
+
+// Remove plugin options.
+delete_option( '{{PLUGIN_SLUG_UNDERSCORED}}_options' );
+delete_option( '{{PLUGIN_SLUG_UNDERSCORED}}_version' );
+
+// Do NOT delete posts, pages, or media — those belong to the site.
+```
+
+### Dynamic blocks (`blocks.php` + `blocks/`)
+
+Per https://developer.wordpress.org/block-editor/reference-guides/block-api/block-metadata/ — **apiVersion 3 is required** for WP 6.9+.
+
+```php
+<?php
+if ( ! defined( 'ABSPATH' ) ) { exit; }
+
+add_action( 'init', function () {
+    foreach ( glob( plugin_dir_path( __FILE__ ) . '../blocks/*', GLOB_ONLYDIR ) as $block_dir ) {
+        if ( file_exists( $block_dir . '/block.json' ) ) {
+            register_block_type_from_metadata( $block_dir );
+        }
+    }
+} );
+```
+
+`blocks/<name>/block.json`:
+
+```json
+{
+  "$schema": "https://schemas.wp.org/trunk/block.json",
+  "apiVersion": 3,
+  "name": "{{PLUGIN_SLUG}}/<name>",
+  "title": "...",
+  "category": "widgets",
+  "textdomain": "{{PLUGIN_SLUG}}",
+  "supports": { "html": false },
+  "render": "file:./render.php"
+}
+```
+
+`blocks/<name>/render.php` — always use `get_block_wrapper_attributes()`.
+
+---
 
 ## Scope
 
 - Write allowed: only inside `{{PLUGIN_DIR}}`.
 - Read allowed: anything under `{{SOURCE_DIR}}` and `{{PLUGIN_DIR}}`.
-- Do NOT touch the theme directory, the content directory, or the
-  database.
+- Do NOT touch the theme directory, content directory, or database.
 
 ## Plugin metadata
 
 - Plugin slug: `{{PLUGIN_SLUG}}`
-- Prefix: `wpify` for neutral helpers, `{{PLUGIN_SLUG_UNDERSCORED}}` for
-  plugin-specific identifiers (functions, hooks, options, post meta,
-  block names). (Derive the underscored form from the slug: replace `-`
-  with `_`.)
+- Underscored prefix: `{{PLUGIN_SLUG_UNDERSCORED}}`
+- Text domain: `{{PLUGIN_SLUG}}`
 
-## Inputs
+## Source kind
 
-Source kind: **`{{SOURCE_KIND}}`**. Detector briefing (read first):
+**`{{SOURCE_KIND}}`**. Detector briefing:
 
 > {{DETECTOR_BRIEFING}}
+
+## Inputs
 
 Detected context:
 
@@ -42,286 +589,51 @@ User choices:
 {{CHOICES_JSON}}
 ```
 
-## SSG Plugin Migration (CRITICAL)
+---
 
-The source site has SSG-level plugins (generators, hooks, custom build
-steps) that produce custom pages, endpoints, or content transformations.
-**You MUST analyze each one and replicate its behavior in WordPress.**
+## Code-quality rules
 
-Source SSG plugin files:
-
-{{SSG_PLUGINS_SOURCE}}
-
-**For every SSG plugin above:**
-
-1. **Read the source code carefully.** Understand what it generates —
-   custom pages? alternate views of existing content? category indexes?
-   RSS feeds? sitemaps?
-
-2. **Create a matching WordPress implementation** in `includes/` that
-   produces the same URLs with the same content. Common patterns:
-
-   | SSG pattern | WordPress equivalent |
-   |---|---|
-   | Generator that creates parallel pages (e.g. `/llm/{slug}/` mirror of `/blog/{slug}/`) | Custom rewrite rules + a page template/endpoint that renders the alternate view. Use `add_rewrite_rule` + `query_vars` filter + `template_include` filter. |
-   | Generator that creates category/tag index pages | Already handled by WordPress taxonomy archives — but if the source uses a custom URL pattern, add `add_rewrite_rule` to match. |
-   | Generator that creates data-driven pages from YAML/JSON | Custom page + `WP_Query` or options-based data rendering. |
-   | Build hook that transforms content (e.g. markdown rendering, syntax highlighting) | `the_content` filter or shortcode. |
-
-3. **The `/llm/` pattern specifically** (if present): The source has a
-   generator that creates a parallel set of pages at `/llm/{post-slug}/`
-   which display each blog post's raw markdown in a special layout
-   (typically for LLM consumption). To replicate:
-
-   - Register a custom rewrite: `/llm/(.+)/?$` → `index.php?llm_post=$matches[1]`
-   - Add `llm_post` to `query_vars`
-   - On `template_include`, if `get_query_var('llm_post')` is set, find
-     the post by slug, and render using a dedicated PHP template that
-     outputs the post content as markdown inside `<pre>` with any
-     context/instructions markup the source layout used.
-   - Flush rewrite rules on activation.
-   - The rendered page must be HTML (not raw markdown MIME type) — same
-     as the source which wraps markdown in `<pre>` tags.
-   - Copy the structure from the source's `post-llm` layout: `<context>`
-     block, `<instructions>` block, `<pre>` with the markdown.
-
-4. **Category page generators**: If the source has a generator that
-   creates `/category/{slug}/` pages, WordPress already handles this via
-   taxonomy archives. But ensure the URL structure matches — add rewrite
-   rules if the source uses a non-default pattern like `/category/`
-   instead of WordPress's default `/category/`.
-
-**Every custom URL the source produces MUST have a working WordPress
-equivalent.** If the source generates `/llm/`, `/feed.xml`, custom
-category pages, or any other computed output, the plugin MUST replicate
-it. An endpoint that existed in the source but is missing in WordPress is
-a migration failure.
-
-## Required output
-
-### Bootstrap
-
-- `{{PLUGIN_SLUG}}.php` — only the WordPress plugin header comment and a
-  `foreach` that `require_once`'s every `includes/*.php`. Standard header
-  fields, with HUMAN-READABLE metadata (WordPress's plugin list displays
-  `Plugin Name` as-is):
-  - `Plugin Name: {{SITE_TITLE}} Site` (e.g. if the migrated site title is
-    "F. Kadev", use `Plugin Name: F. Kadev Site`). Never emit the raw
-    slug as the plugin name.
-  - `Plugin URI`, `Description: Site-specific plugin for {{SITE_TITLE}} —
-    CPTs, shortcodes, analytics, redirects, and other non-theme features
-    migrated by to-wordpress.`,
-  - `Version: 0.1.0`, `Requires at least: 6.3`, `Requires PHP: 8.1`,
-  - `License: GPL-2.0-or-later`, `Text Domain: {{PLUGIN_SLUG}}`.
-  Guard with `if ( ! defined( 'ABSPATH' ) ) { exit; }`.
-- `readme.txt` — standard WP plugin readme with Stable tag `0.1.0`.
-- `uninstall.php` — deletes plugin options + CPT/meta registered here
-  when the plugin is deleted.
-
-### Feature includes
-
-Create one file under `includes/` for **every** matched feature below.
-Omit a file only when the corresponding detected input is empty — never
-emit a stub.
-
-| feature | include file | trigger (detected input) |
-|---|---|---|
-| Custom post types | `includes/cpt.php` | any entry in `choices.customPostTypes` |
-| Taxonomies | `includes/taxonomies.php` | custom taxonomies in detected front-matter |
-| Newsletter | `includes/newsletter.php` | `features.newsletterFormAction` |
-| Giscus comments | `includes/comments-giscus.php` | `features.giscusRepo` |
-| Disqus comments | `includes/comments-disqus.php` | `features.disqusShortname` |
-| Commento comments | `includes/comments-commento.php` | `features.commentoEnabled` |
-| Google Analytics | `includes/analytics-ga.php` | `features.googleAnalyticsId` |
-| Google Tag Manager | `includes/analytics-gtm.php` | `features.gtmId` |
-| Plausible | `includes/analytics-plausible.php` | `features.plausibleDomain` |
-| Umami | `includes/analytics-umami.php` | `features.umamiWebsiteId` |
-| Cookie banner | `includes/cookie-banner.php` | `features.cookieBanner` |
-| Dark mode | `includes/dark-mode.php` | `features.darkMode` |
-| Open Graph / Twitter Card | `includes/social-meta.php` | `features.twitterSite` / `features.twitterCreator` / `features.metaOpengraphType` |
-| SSG plugin endpoints | `includes/endpoints.php` | any SSG plugin that generates custom URL patterns (e.g. `/llm/`, `/feed/`, category pages) |
-| SSG plugin generators | `includes/generators.php` | any SSG plugin that produces alternate content views or computed pages |
-| Redirects | `includes/redirects.php` | always |
-| Shortcodes | `includes/shortcodes.php` | if `_source_includes/shortcodes/*` exists |
-| Blocks | `includes/blocks.php` + `includes/blocks/<name>/` | if `.prompt.yml` files exist, or source has interactive blocks |
-| Options page | `includes/options.php` | always (see below) |
-| Data loader | `includes/data.php` | if plugin needs `_data/*` server-side |
-
-### Implementation rules per feature
-
-**Custom post types** (`cpt.php`):
-
-For every entry in `choices.customPostTypes` call `register_post_type` on
-the `init` hook with:
-
-- `public = true`, `show_in_rest = true`, `has_archive = true`,
-- `supports = ['title','editor','excerpt','thumbnail','custom-fields','author','comments','revisions']`,
-- `rewrite = ['slug' => <pathPrefix or slug>, 'with_front' => false]`.
-- `labels` must be fully populated (not auto-generated).
-- Flush rewrite rules once on activation via
-  `register_activation_hook`.
-
-**Taxonomies** (`taxonomies.php`):
-
-Register any non-default taxonomies the source used. Attach them to the
-correct post types. `hierarchical` = true for `categories`, false for
-`tags`.
-
-**Newsletter** (`newsletter.php`):
-
-- Register shortcode `[{{PLUGIN_SLUG_UNDERSCORED}}_newsletter]`.
-- Expose hook `do_action('{{THEME_SLUG}}/newsletter')` the theme can call.
-- Render a Mailchimp-style form posting to the URL from
-  `features.newsletterFormAction`.
-- Do not proxy via WordPress; submit directly to the original endpoint.
-
-**Comments integrations** (`comments-*.php`):
-
-- Hook `comments_template` filter to load a plugin-owned comments
-  template that renders giscus / disqus / commento using the repo /
-  shortname from detected context.
-- Provide an options page override so the site owner can change the
-  repo / shortname without editing code.
-- Always defer loading JS to `wp_footer` with `defer` attribute.
-
-**Analytics** (`analytics-*.php`):
-
-- Each loader checks if its ID is set in options.
-- GA4 uses the gtag.js snippet; GTM uses `GTM-XXXX` snippet; Plausible
-  uses the official `plausible.io/js/plausible.js` snippet; Umami uses
-  the `script` + `data-website-id` snippet.
-- Do not load analytics if a cookie-consent flag is false (check
-  `{{PLUGIN_SLUG_UNDERSCORED}}_cookie_consent()`).
-- Never load on admin screens or for logged-in editors.
-
-**Cookie banner** (`cookie-banner.php`):
-
-- Renders at `wp_footer` priority 1.
-- Stores consent in a first-party cookie `{{PLUGIN_SLUG_UNDERSCORED}}_consent`
-  for 365 days.
-- Provides `{{PLUGIN_SLUG_UNDERSCORED}}_cookie_consent()` helper.
-- Accessible: role="dialog", aria-label, Escape key dismisses the banner.
-
-**Dark mode** (`dark-mode.php`):
-
-- Enqueues a 20-line JS that toggles `data-theme="dark"` on `<html>`.
-- Persists to `localStorage` and syncs with `prefers-color-scheme`.
-- Exposes `do_action('{{THEME_SLUG}}/dark_mode_toggle')` for the theme.
-
-**Redirects** (`redirects.php`):
-
-- Reads `WORDPRESS_MIGRATION/redirects.json` at plugin load if the file
-  exists. Missing file must not emit warnings.
-- On `template_redirect`, if the current request path matches a key, send
-  a 301 to the mapped value.
-- Skip redirects for logged-in admins.
-
-**Social meta** (`social-meta.php`):
-
-- Emits `og:title`, `og:description`, `og:image`, `og:type`,
-  `twitter:card`, `twitter:site`, `twitter:creator` on `wp_head`
-  priority 1, only on singular views.
-
-**Open Graph image** must come from post meta `featured_image` or the
-featured image attachment. Never a generic placeholder.
-
-**Shortcodes** (`shortcodes.php`):
-
-Port each `_source_includes/shortcodes/*.html` to
-`add_shortcode('{{PLUGIN_SLUG_UNDERSCORED}}_<name>', …)`. Maintain the
-exact attribute names the source used.
-
-Additionally, the normalize phase rewrote every Liquid `{% include %}` in
-post/page content into a WordPress shortcode. Register a handler for every
-entry below so no raw shortcode text leaks to the rendered page — an
-unregistered shortcode renders as `[wpify_xyz …]` in the post which is
-strictly worse than the original Liquid output. The required names are:
-
-```json
-{{SHORTCODES_JSON}}
-```
-
-{{SHORTCODES_LIST}}
-
-For each `wpify_<name>` shortcode:
-
-1. Find the source template at `_includes/**/<name>.html` (try both
-   `framework/shortcodes/<name>.html` and `shortcodes/<name>.html`). Port
-   its Liquid markup to PHP — respect every attribute the source read.
-2. If the source template does not exist, generate a reasonable default:
-   render a `<div class="wpify-shortcode wpify-shortcode--<name>">` that
-   dumps attribute key/value pairs as `data-*` attributes, so nothing is
-   visually missing. Comment the file noting "synthetic — please edit".
-3. Register on `init` so shortcodes resolve before `the_content` runs.
-4. Every shortcode callback must `esc_*` every attribute it echoes.
-
-The goal: a post containing `[wpify_figure src="/x.webp" caption="hi"]`
-must render a real `<figure>` with that image, not the literal bracket
-text.
-
-**Blocks** (`blocks.php` + `blocks/<name>/`):
-
-Register custom blocks with `register_block_type_from_metadata`. Each
-block lives in its own folder with `block.json`, `render.php`,
-`edit.js`, `view.js`, `style.css`. Do not use `@wordpress/create-block`
-scaffolding that requires a build step unless the source already has one.
-
-**Options page** (`options.php`):
-
-- Adds a menu at `Settings → {{SITE_TITLE}}` (slug
-  `{{PLUGIN_SLUG_UNDERSCORED}}_settings`).
-- Uses the Settings API (`register_setting`, `add_settings_section`,
-  `add_settings_field`).
-- Seeds defaults from detected context (so fresh installs work without
-  hand configuration).
-- Fields: analytics IDs, newsletter endpoint, giscus/disqus/commento
-  keys, cookie banner text, social handles.
-- All options are prefixed `{{PLUGIN_SLUG_UNDERSCORED}}_`.
-
-### Code-quality rules
-
-1. Prefix every function, class, constant, hook, option name, post meta
-   key, and block name with `wpify_` (neutral helpers) or
-   `{{PLUGIN_SLUG_UNDERSCORED}}_` (plugin-specific).
-2. Use namespaces only if the source is PHP ≥ 8; otherwise plain
-   prefixed function names are fine.
-3. Every file starts with `<?php` on line 1 and `if ( ! defined(
-   'ABSPATH' ) ) { exit; }` right after the file docblock.
-4. Escape outputs: `esc_html`, `esc_attr`, `esc_url`,
-   `wp_kses_post`. Never echo unescaped user data.
-5. Sanitize inputs: `sanitize_text_field`, `sanitize_email`,
-   `esc_url_raw`, `wp_unslash` before DB writes.
-6. Nonces on every form and AJAX action
-   (`wp_create_nonce`, `check_admin_referer`).
-7. Translation-ready: every user-visible string uses the plugin text
-   domain `{{PLUGIN_SLUG}}`.
-8. No composer, no build step, no npm unless registering a block forces
-   it. Pure PHP + tiny inline JS where needed.
-9. No external HTTP requests from PHP except to the analytics/newsletter
-   endpoints that are already in detected context.
+1. **Prefix everything**. Neutral helpers use `wpify_`; plugin-specific
+   functions, hooks, options, post meta keys, block names use
+   `{{PLUGIN_SLUG_UNDERSCORED}}_`.
+2. **Every file** starts with `<?php` then `if ( ! defined( 'ABSPATH' ) ) { exit; }`.
+3. **Escape on output, sanitize on input.** Never the reverse.
+4. **Nonces** on every form and AJAX action; paired with capability checks.
+5. **Translation-ready**. Every user-visible string uses text domain `{{PLUGIN_SLUG}}`.
+6. **No build step** (no composer, no npm) unless a block requires it.
+7. **No external HTTP** from PHP except to analytics/newsletter endpoints already
+   in detected context.
+8. **Admin-only code** behind admin hooks / `is_admin()` to reduce frontend load.
 
 ## Anti-patterns (banned)
 
-- Function names without a prefix (e.g. `register_my_cpt()`).
-- Storing config as constants instead of options.
-- Hard-coding IDs, domains, tracking keys.
+- Unprefixed function/hook/option names.
+- Storing config as PHP constants instead of options.
+- Hard-coded IDs, domains, tracking keys.
 - Stub files that only `echo 'TODO';`.
-- Duplicating functionality that belongs in the theme (header markup,
-  body classes, layout templates).
+- Logic in the main plugin file (beyond header + include loop).
+- `@include` instead of `require_once`.
+- Raw `$_POST` / `$_GET` handling without sanitize + validate.
 
-## Self-check (walk every item before you stop)
+---
 
-- [ ] `{{PLUGIN_SLUG}}.php` contains only the header + `require_once`
-      loop.
-- [ ] Every detected feature in the matrix above has a non-stub include
-      file, or is genuinely empty in the detected input.
-- [ ] Every CPT in `choices.customPostTypes` is registered with the
-      correct `rewrite` slug and `supports` array.
-- [ ] Options page is reachable at `Settings → {{SITE_TITLE}}` and lists
-      every editable key.
-- [ ] No function, hook, option, or post meta key is unprefixed.
-- [ ] `redirects.php` handles a missing `redirects.json` silently.
-- [ ] No placeholder strings, no unfinished features.
-- [ ] Text domain `{{PLUGIN_SLUG}}` is used consistently.
-- [ ] `uninstall.php` removes plugin-created options; does NOT delete
-      posts, pages, or media (those belong to the site).
+## Self-check (walk every item before stopping)
+
+- [ ] `{{PLUGIN_SLUG}}.php` has only the plugin header + ABSPATH guard +
+      `require_once` loop. No business logic.
+- [ ] Every SSG plugin in `{{SSG_PLUGINS_SOURCE}}` has a matching
+      WordPress implementation under `includes/`.
+- [ ] If source has `/llm/` generator: `includes/endpoints.php` registers
+      rewrite + query var + template_include + activation hook flushing
+      rewrite rules. A `plugins/<slug>/templates/llm-view.php` exists and
+      renders markdown in `<pre>`.
+- [ ] Every entry in `{{SHORTCODES_JSON}}` has an `add_shortcode` handler
+      with fully escaped attribute output.
+- [ ] Every CPT in `choices.customPostTypes` has `show_in_rest: true` and
+      proper `labels` array.
+- [ ] Options page reachable at `Settings → {{SITE_TITLE}}`.
+- [ ] `uninstall.php` checks `WP_UNINSTALL_PLUGIN` and only removes
+      plugin-created options (not posts/pages/media).
+- [ ] Every `$_POST` / `$_GET` access uses `wp_unslash()` + a sanitize fn.
+- [ ] No unprefixed function/hook/option/meta key names.
+- [ ] No placeholder strings, no TODOs, no hard-coded domains.

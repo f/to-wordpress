@@ -249,7 +249,6 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
             width={rightWidth}
             height={museHeight}
             view={museView}
-            empty={museText.length === 0}
           />
         </Box>
       </Box>
@@ -508,12 +507,10 @@ function MusePane({
   width,
   height,
   view,
-  empty,
 }: {
   width: number;
   height: number;
   view: { lines: string[]; hiddenAbove: number };
-  empty: boolean;
 }) {
   return (
     <Box
@@ -542,13 +539,6 @@ function MusePane({
           {l}
         </Text>
       ))}
-      {empty ? (
-        <Text color={CHROME} wrap="wrap">
-          (the muse is silent — Copilot CLI only streams reasoning for OpenAI
-          models. Try <Text color="cyan">COPILOT_MODEL=gpt-5.4</Text>{" "}
-          <Text color="cyan">COPILOT_EFFORT=high</Text> to hear her.)
-        </Text>
-      ) : null}
     </Box>
   );
 }

@@ -41,7 +41,7 @@ import {
 } from "./phases/loops.js";
 import type { PhaseStatus } from "./types.js";
 
-const PACKAGE_VERSION = "0.5.0";
+const PACKAGE_VERSION = "0.5.1";
 
 interface CliOptions {
   agent?: AgentKind;

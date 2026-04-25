@@ -13,9 +13,19 @@
 
 ---
 
-`to-wordpress` is an AI-assisted migration CLI. Point it at a Jekyll,
-Hugo, Astro, WXR, Medium, Substack, Markdown, DOCX, XLSX, PDF, EPUB,
-README, or plain text source and it builds a local WordPress site with:
+`to-wordpress` is an AI-assisted migration CLI with one aim: **one
+command to migrate a site into WordPress**.
+
+It uses the expert WordPress guidance from
+[`WordPress/agent-skills`](https://github.com/WordPress/agent-skills/)
+under the hood, but wraps it in fully automated migration recipes:
+detect the source, plan the move, generate the theme/plugin, import the
+content, verify the result, fix what failed, and leave a tune-up plan if
+you want more polish.
+
+Point it at a Jekyll, Hugo, Astro, WXR, Medium, Substack, Markdown,
+DOCX, XLSX, PDF, EPUB, README, or plain text source and it builds a local
+WordPress site with:
 
 - a classic PHP theme,
 - a site plugin,

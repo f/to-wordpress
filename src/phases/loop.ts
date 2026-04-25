@@ -330,6 +330,14 @@ export async function runAgenticLoop<TReport>(
           timeoutMs: fixOpts.timeoutMs,
         });
         if (result.sessionId) ctx.copilotSessionId = result.sessionId;
+        if (result.exitCode !== 0) {
+          bus.pushStreamEvent(phase, {
+            type: "warn",
+            phase,
+            message: `fix pass ${fixPass} agent exited ${result.exitCode}; skipping re-test for this pass`,
+          });
+          continue;
+        }
       } catch (fixErr) {
         bus.pushStreamEvent(phase, {
           type: "warn",

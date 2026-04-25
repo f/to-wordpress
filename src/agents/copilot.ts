@@ -22,9 +22,14 @@ export function buildCopilotArgs(opts: AgentRunOptions): string[] {
     "on",
     "--allow-all-tools",
     "--no-ask-user",
-    "--mode",
-    opts.mode ?? "autopilot",
   ];
+  // Some Copilot CLI versions reject `--mode` even though newer builds
+  // document it. `--autopilot` is the stable shorthand for the only mode
+  // we use in unattended migrations, and omitting a mode still keeps
+  // `-p` non-interactive.
+  if ((opts.mode ?? "autopilot") === "autopilot") {
+    args.push("--autopilot");
+  }
   if (opts.addDirs) {
     for (const d of opts.addDirs) args.push("--add-dir", d);
   }

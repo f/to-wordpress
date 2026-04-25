@@ -361,6 +361,12 @@ test("copilot --effort defaults to high", () => {
   assert.equal(args[i + 1], "high");
 });
 
+test("copilot uses --autopilot instead of brittle --mode flag", () => {
+  const args = buildCopilotArgs({ prompt: "x", cwd: "/tmp" });
+  assert.ok(args.includes("--autopilot"));
+  assert.ok(!args.includes("--mode"));
+});
+
 test("claude --effort defaults to high and maps xhigh → max", () => {
   const high = buildClaudeArgs({ prompt: "x", cwd: "/tmp" });
   let i = high.indexOf("--effort");

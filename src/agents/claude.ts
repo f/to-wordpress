@@ -2,12 +2,16 @@ import type { CopilotEvent } from "../types.js";
 import type { AgentRunOptions, AgentSpec } from "./types.js";
 
 export const DEFAULT_CLAUDE_MODEL =
-  process.env.CLAUDE_MODEL ?? "claude-sonnet-4-5";
+  process.env.CLAUDE_MODEL ?? "claude-opus-4-7";
+
+export const DEFAULT_CLAUDE_EFFORT: "low" | "medium" | "high" | "max" =
+  (process.env.CLAUDE_EFFORT as "low" | "medium" | "high" | "max" | undefined) ?? "high";
 
 /**
  * Build CLI args for Anthropic's Claude Code CLI. `stream-json` requires
  * `--verbose`; `--include-partial-messages` enables fine-grained delta
- * events we translate into live message/reasoning updates.
+ * events we translate into live message/reasoning updates. `--effort`
+ * controls extended-thinking budget (low|medium|high|max).
  */
 export function buildClaudeArgs(opts: AgentRunOptions): string[] {
   const args: string[] = [
@@ -29,6 +33,11 @@ export function buildClaudeArgs(opts: AgentRunOptions): string[] {
     args.push("--disallowed-tools", opts.denyTools.join(","));
   }
   args.push("--model", opts.model ?? DEFAULT_CLAUDE_MODEL);
+  // Map the unified effort scale onto Claude's (low|medium|high|max).
+  // The shared "xhigh" bucket lands on Claude's `max`.
+  const effortRaw = opts.reasoningEffort ?? DEFAULT_CLAUDE_EFFORT;
+  const effort = effortRaw === "xhigh" ? "max" : effortRaw;
+  args.push("--effort", effort);
   if (opts.resumeSessionId) args.push("--resume", opts.resumeSessionId);
   if (typeof opts.maxAutopilotContinues === "number") {
     args.push("--max-turns", String(opts.maxAutopilotContinues));

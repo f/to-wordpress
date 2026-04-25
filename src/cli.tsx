@@ -1,11 +1,11 @@
 import React from "react";
 import { render } from "ink";
 import { Command } from "commander";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { App } from "./tui/App.js";
-import { UiBus, PHASE_TITLES } from "./tui/bus.js";
+import { UiBus, PHASE_TITLES, type TuneRequest } from "./tui/bus.js";
 import { attachHeadlessLogger } from "./tui/headless.js";
 import type { MigrationContext, PhaseId } from "./types.js";
 import {
@@ -24,6 +24,7 @@ import {
   DEFAULT_CODEX_MODEL,
   DEFAULT_COPILOT_EFFORT,
   DEFAULT_COPILOT_MODEL,
+  runAgentToEnd,
   type AgentKind,
 } from "./agents/index.js";
 import { runAgenticLoop, type FailStrategy } from "./phases/loop.js";
@@ -34,14 +35,13 @@ import {
   themeLoop,
   pluginLoop,
   normalizeLoop,
-  blockifyLoop,
   importLoop,
   verifyLoop,
   testfixLoop,
 } from "./phases/loops.js";
 import type { PhaseStatus } from "./types.js";
 
-const PACKAGE_VERSION = "0.5.1";
+const PACKAGE_VERSION = "0.5.2";
 
 interface CliOptions {
   agent?: AgentKind;
@@ -74,11 +74,11 @@ const PHASE_ORDER: PhaseId[] = [
   "boot",
   "theme",
   "normalize",
-  "blockify",
   "plugin",
   "import",
   "verify",
   "testfix",
+  "tune",
 ];
 
 async function main(): Promise<void> {
@@ -151,6 +151,7 @@ async function main(): Promise<void> {
 
   const bus = new UiBus();
   const startedAt = Date.now();
+  attachTuneRoom(bus, ctx, () => Boolean(opts.skipCopilot));
 
   const isTty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
   const headless = !isTty || Boolean(opts.yes);
@@ -251,6 +252,7 @@ async function main(): Promise<void> {
         doc.phases[id].notes = "recovered from interrupted run";
       }
     }
+    hydrateSidebarFromDoc(bus, doc);
     await hydrateWpUrl(ctx);
 
     const explicitRange = Boolean(opts.from || opts.only || opts.until);
@@ -288,7 +290,6 @@ async function main(): Promise<void> {
     await step(bootLoop(ctx, bus, Boolean(opts.skipBoot)));
     await step(themeLoop(ctx, bus, Boolean(opts.skipCopilot)));
     await step(normalizeLoop(ctx, bus));
-    await step(blockifyLoop(ctx, bus, Boolean(opts.skipCopilot)));
     await step(pluginLoop(ctx, bus, Boolean(opts.skipCopilot)));
     await step(importLoop(ctx, bus));
     await step(verifyLoop(ctx, bus));
@@ -355,6 +356,244 @@ async function hydrateWpUrl(ctx: MigrationContext): Promise<void> {
   } catch {
     ctx.wpUrl = "http://localhost:8888";
   }
+}
+
+function hydrateSidebarFromDoc(bus: UiBus, doc: MigrationDoc): void {
+  for (const [id, entry] of Object.entries(doc.phases)) {
+    const status = entry.status;
+    if (
+      status === "pending" ||
+      status === "running" ||
+      status === "ok" ||
+      status === "fail" ||
+      status === "skipped"
+    ) {
+      bus.emit("phase", id as PhaseId, status, entry.notes);
+    }
+  }
+}
+
+function attachTuneRoom(
+  bus: UiBus,
+  ctx: MigrationContext,
+  skipAgent: () => boolean,
+): void {
+  let active = false;
+  bus.on("tune:request", async (req: TuneRequest) => {
+    const text = req.text.trim();
+    if (!text || active) return;
+    active = true;
+    bus.pushStreamEvent("tune", {
+      type: "phase_start",
+      phase: "tune",
+      message: "listening to the margins — drafting a repair list",
+    });
+    try {
+      const doc = await loadMigrationDoc(ctx.planPath, ctx.sourceDir);
+      markPhase(doc, "tune", "running", "drafting repair list");
+      await saveMigrationDoc(ctx.planPath, doc);
+    } catch {
+      // UI can still proceed even if the status file is not writable.
+    }
+    try {
+      const markdown = skipAgent()
+        ? buildDeterministicTuneTasks(text)
+        : await buildAgentTuneTasks(ctx, bus, text);
+      await mkdir(ctx.workDir, { recursive: true });
+      const outPath = join(ctx.workDir, "tune-tasks.md");
+      await writeFile(outPath, markdown.trim() + "\n", "utf8");
+      bus.pushStreamEvent("tune", {
+        type: "info",
+        phase: "tune",
+        message: `repair list written to ${outPath}`,
+      });
+      bus.emit("tune:tasks", { markdown, path: outPath });
+      bus.pushStreamEvent("tune", {
+        type: "phase_ok",
+        phase: "tune",
+        message: "the margin notes are ready",
+      });
+      try {
+        const doc = await loadMigrationDoc(ctx.planPath, ctx.sourceDir);
+        markPhase(doc, "tune", "ok", `repair list: ${outPath}`);
+        await saveMigrationDoc(ctx.planPath, doc);
+      } catch {
+        // non-fatal
+      }
+    } catch (err) {
+      const fallback = buildDeterministicTuneTasks(text);
+      const outPath = join(ctx.workDir, "tune-tasks.md");
+      try {
+        await mkdir(ctx.workDir, { recursive: true });
+        await writeFile(outPath, fallback.trim() + "\n", "utf8");
+      } catch {
+        // keep the UI response even if the file write fails
+      }
+      bus.pushStreamEvent("tune", {
+        type: "warn",
+        phase: "tune",
+        message: `agent could not draft it (${(err as Error).message}); wrote a deterministic list`,
+      });
+      bus.emit("tune:tasks", { markdown: fallback, path: outPath });
+      bus.pushStreamEvent("tune", {
+        type: "phase_ok",
+        phase: "tune",
+        message: "the tuning list is ready (deterministic fallback)",
+      });
+      try {
+        const doc = await loadMigrationDoc(ctx.planPath, ctx.sourceDir);
+        markPhase(doc, "tune", "ok", `fallback repair list: ${outPath}`);
+        await saveMigrationDoc(ctx.planPath, doc);
+      } catch {
+        // non-fatal
+      }
+    } finally {
+      active = false;
+    }
+  });
+  bus.on("tune:build", async (tasks: { markdown?: string; path?: string }) => {
+    if (active) return;
+    active = true;
+    bus.pushStreamEvent("tune", {
+      type: "phase_start",
+      phase: "tune",
+      message: "setting the compositor to work — applying the tune plan",
+    });
+    try {
+      const doc = await loadMigrationDoc(ctx.planPath, ctx.sourceDir);
+      markPhase(doc, "tune", "running", "applying repair plan");
+      await saveMigrationDoc(ctx.planPath, doc);
+    } catch {
+      // non-fatal
+    }
+    try {
+      await runAgentToEnd(
+        {
+          prompt: buildTuneBuildPrompt(ctx, tasks.markdown ?? ""),
+          cwd: ctx.sourceDir,
+          addDirs: [ctx.sourceDir, ctx.workDir, ctx.themeDir, ctx.pluginDir, ctx.contentDir],
+          resumeSessionId: ctx.copilotSessionId,
+          maxAutopilotContinues: 30,
+          timeoutMs: 20 * 60 * 1000,
+        },
+        (ev) => bus.pushStreamEvent("tune", ev),
+      );
+      bus.pushStreamEvent("tune", {
+        type: "phase_ok",
+        phase: "tune",
+        message: "the tune pass has been set in type",
+      });
+      try {
+        const doc = await loadMigrationDoc(ctx.planPath, ctx.sourceDir);
+        markPhase(doc, "tune", "ok", "repair plan applied");
+        await saveMigrationDoc(ctx.planPath, doc);
+      } catch {
+        // non-fatal
+      }
+    } catch (err) {
+      bus.pushStreamEvent("tune", {
+        type: "phase_fail",
+        phase: "tune",
+        message: `tune pass failed: ${(err as Error).message}`,
+      });
+      try {
+        const doc = await loadMigrationDoc(ctx.planPath, ctx.sourceDir);
+        markPhase(doc, "tune", "fail", (err as Error).message);
+        await saveMigrationDoc(ctx.planPath, doc);
+      } catch {
+        // non-fatal
+      }
+    } finally {
+      active = false;
+    }
+  });
+}
+
+async function buildAgentTuneTasks(ctx: MigrationContext, bus: UiBus, note: string): Promise<string> {
+  const prompt = [
+    "You are the post-migration tuning assistant for to-wordpress.",
+    "The migration has completed, but the user is describing remaining small issues.",
+    "Turn the user's note into a concise, actionable Markdown task list.",
+    "",
+    "Rules:",
+    "- Title the document: # Tune the Press",
+    "- Group tasks by: Theme/UI, Content/URLs, Plugin/Behavior, Verification.",
+    "- Each task must be checkbox syntax: - [ ] ...",
+    "- Include exact files or likely files when inferable.",
+    "- Keep tasks concrete and repair-oriented; no generic advice.",
+    "- Do not claim the fixes were already made.",
+    "",
+    `Source dir: ${ctx.sourceDir}`,
+    `Work dir: ${ctx.workDir}`,
+    `Theme dir: ${ctx.themeDir}`,
+    `Plugin dir: ${ctx.pluginDir}`,
+    `Content dir: ${ctx.contentDir}`,
+    "",
+    "User note:",
+    note,
+  ].join("\n");
+
+  const result = await runAgentToEnd(
+    {
+      prompt,
+      cwd: ctx.sourceDir,
+      addDirs: [ctx.sourceDir, ctx.workDir, ctx.themeDir, ctx.pluginDir, ctx.contentDir],
+      resumeSessionId: ctx.copilotSessionId,
+      maxAutopilotContinues: 3,
+      timeoutMs: 5 * 60 * 1000,
+    },
+    (ev) => bus.pushStreamEvent("tune", ev),
+  );
+  return result.assistantText.trim() || buildDeterministicTuneTasks(note);
+}
+
+function buildDeterministicTuneTasks(note: string): string {
+  const lines = note
+    .split(/\r?\n|[.;]/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, 12);
+  const tasks = lines.length > 0 ? lines : [note.trim()];
+  return [
+    "# Tune the Press",
+    "",
+    "## Theme / UI",
+    ...tasks.map((t) => `- [ ] Reproduce and fix: ${t}`),
+    "",
+    "## Content / URLs",
+    "- [ ] Re-run Verify and endpoint sweep after the theme/UI fixes.",
+    "",
+    "## Plugin / Behavior",
+    "- [ ] Check whether any shortcode, menu, comments, analytics, or custom endpoint behavior is involved.",
+    "",
+    "## Verification",
+    "- [ ] Visit the affected pages on http://localhost:8888 and confirm no PHP warnings, notices, fatals, or 404s remain.",
+  ].join("\n");
+}
+
+function buildTuneBuildPrompt(ctx: MigrationContext, tasksMarkdown: string): string {
+  return [
+    "You are the post-migration tuning engineer for to-wordpress.",
+    "Apply the repair plan below. This is a working migration tree; make focused, minimal edits.",
+    "",
+    "Scope:",
+    `- Source dir: ${ctx.sourceDir}`,
+    `- Theme dir: ${ctx.themeDir}`,
+    `- Plugin dir: ${ctx.pluginDir}`,
+    `- Content dir: ${ctx.contentDir}`,
+    "- Write only inside the source/work tree. Do not edit unrelated files.",
+    "",
+    "Rules:",
+    "- Work through the checked-list items in order.",
+    "- Prefer classic theme template fixes in header.php, footer.php, front-page.php, home.php, single.php, page.php, archive.php, category.php, template-parts/**/*.php, and style.css.",
+    "- Prefer plugin fixes in includes/*.php for shortcodes, endpoints, analytics/comments/cookie/dark-mode behavior.",
+    "- After edits, run lightweight checks where possible: fetch http://localhost:8888, affected paths, and scan for PHP warnings/notices/fatals/404s.",
+    "- Do not ask the user questions. If a detail is missing, infer from the source and continue.",
+    "- End with a short summary of files changed and verification performed.",
+    "",
+    "Repair plan:",
+    tasksMarkdown || "(No plan text was supplied; inspect tune-tasks.md if it exists and continue.)",
+  ].join("\n");
 }
 
 main().catch((err) => {

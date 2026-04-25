@@ -601,7 +601,22 @@ towp_try( 'front_page', function () use ( $manifest ) {
 
 towp_try( 'blog_index', function () use ( $manifest ) {
     if ( ! empty( $manifest['blog_index_page_slug'] ) ) {
-        $blog = get_page_by_path( sanitize_title( $manifest['blog_index_page_slug'] ), OBJECT, 'page' );
+        $blog_slug = sanitize_title( $manifest['blog_index_page_slug'] );
+        $blog = get_page_by_path( $blog_slug, OBJECT, 'page' );
+        if ( ! $blog ) {
+            $blog_id = wp_insert_post( [
+                'post_type'    => 'page',
+                'post_title'   => ucwords( str_replace( '-', ' ', $blog_slug ) ),
+                'post_name'    => $blog_slug,
+                'post_status'  => 'publish',
+                'post_content' => '',
+                'post_author'  => 1,
+            ], true );
+            if ( ! is_wp_error( $blog_id ) ) {
+                $blog = get_post( (int) $blog_id );
+                WP_CLI::log( 'blog index page created: ' . $blog_slug . ' (#' . (int) $blog_id . ')' );
+            }
+        }
         if ( $blog ) {
             update_option( 'page_for_posts', (int) $blog->ID );
             WP_CLI::log( 'blog index: ' . $blog->post_title . ' (#' . $blog->ID . ')' );

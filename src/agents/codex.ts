@@ -2,13 +2,20 @@ import type { CopilotEvent } from "../types.js";
 import type { AgentRunOptions, AgentSpec } from "./types.js";
 
 /**
- * Codex model to pass via `--model`. Only emitted when explicitly set
- * via `CODEX_MODEL` env var or `--model` flag — otherwise codex uses
- * its own default (from `~/.codex/config.toml` or the user's plan),
- * which avoids the "model not supported for your account" error some
- * hard-coded names trigger on ChatGPT accounts.
+ * Codex model to pass via `--model`. Default is `gpt-5.5-codex`;
+ * override with `CODEX_MODEL` env var or `--model` flag. Users on
+ * ChatGPT-only plans may need to pick a different model allowed by
+ * their account (e.g. `CODEX_MODEL=gpt-5` or empty string to let
+ * codex pick its configured default from `~/.codex/config.toml`).
  */
-export const DEFAULT_CODEX_MODEL = process.env.CODEX_MODEL ?? "";
+export const DEFAULT_CODEX_MODEL = process.env.CODEX_MODEL ?? "gpt-5.5-codex";
+
+/**
+ * Reasoning effort passed to codex via `-c model_reasoning_effort="…"`.
+ * Accepted values: `low | medium | high`.
+ */
+export const DEFAULT_CODEX_EFFORT: "low" | "medium" | "high" =
+  (process.env.CODEX_EFFORT as "low" | "medium" | "high" | undefined) ?? "high";
 
 /**
  * Build CLI args for OpenAI's Codex CLI.
@@ -18,6 +25,7 @@ export const DEFAULT_CODEX_MODEL = process.env.CODEX_MODEL ?? "";
  * passed as the final positional argument. `--json` emits JSONL events;
  * `--dangerously-bypass-approvals-and-sandbox` mirrors Copilot's
  * `--allow-all-tools` and Claude's `--dangerously-skip-permissions`.
+ * Reasoning effort is set via `-c model_reasoning_effort="<level>"`.
  */
 export function buildCodexArgs(opts: AgentRunOptions): string[] {
   const args: string[] = ["exec"];
@@ -31,6 +39,11 @@ export function buildCodexArgs(opts: AgentRunOptions): string[] {
   );
   const model = opts.model ?? DEFAULT_CODEX_MODEL;
   if (model) args.push("--model", model);
+  // Map the unified effort scale onto codex's (low|medium|high).
+  // Codex has no "max"/"xhigh"; both collapse to "high".
+  const effortRaw = opts.reasoningEffort ?? DEFAULT_CODEX_EFFORT;
+  const effort = effortRaw === "xhigh" ? "high" : effortRaw;
+  args.push("-c", `model_reasoning_effort="${effort}"`);
   if (opts.addDirs) {
     for (const d of opts.addDirs) args.push("--add-dir", d);
   }

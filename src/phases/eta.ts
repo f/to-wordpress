@@ -13,12 +13,12 @@ const BASE_SECONDS: Record<PhaseId, number> = {
   boot: 120,
   theme: 240,
   normalize: 3,
-  blockify: 120,
   plugin: 180,
   import: 30,
   verify: 25,
   fix: 90,
   testfix: 120,
+  tune: 0,
 };
 
 const PER_ITEM = {
@@ -61,12 +61,12 @@ export function computePhaseBudgets(ctx: MigrationContext): Record<PhaseId, numb
     boot: flags.skipBoot ? 0 : BASE_SECONDS.boot,
     theme: flags.skipCopilot ? 5 : themeCost,
     normalize: normCost,
-    blockify: flags.skipCopilot ? 5 : BASE_SECONDS.blockify,
     plugin: flags.skipCopilot ? 5 : pluginCost,
     import: flags.skipBoot ? 0 : importCost,
     verify: flags.skipBoot ? 0 : verifyCost,
     fix: flags.skipCopilot ? 0 : BASE_SECONDS.fix,
     testfix: flags.skipBoot ? 0 : BASE_SECONDS.testfix,
+    tune: 0,
   };
   return budgets;
 }

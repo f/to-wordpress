@@ -23,12 +23,14 @@ export {
   parseClaudeLine,
   claudeSpec,
   DEFAULT_CLAUDE_MODEL,
+  DEFAULT_CLAUDE_EFFORT,
 } from "./claude.js";
 export {
   buildCodexArgs,
   parseCodexLine,
   codexSpec,
   DEFAULT_CODEX_MODEL,
+  DEFAULT_CODEX_EFFORT,
 } from "./codex.js";
 
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;

@@ -46,6 +46,15 @@ export interface MigrationSummary {
   durationSeconds: number;
 }
 
+export interface TuneRequest {
+  text: string;
+}
+
+export interface TuneTasks {
+  markdown: string;
+  path?: string;
+}
+
 type StreamKind = "assistant" | "reasoning";
 
 /**
@@ -277,12 +286,12 @@ export const PHASE_TITLES: Record<PhaseId, string> = {
   boot: "Lighting the press",
   theme: "Weaving the theme",
   normalize: "Measuring the meter",
-  blockify: "Casting the blocks",
   plugin: "Scoring the verses",
   import: "Binding the manuscript",
   verify: "Reading it aloud",
   fix: "Revising the lines",
   testfix: "Road-testing every page",
+  tune: "Tuning the press",
 };
 
 export const PHASE_VERBS: Record<PhaseId, string> = {
@@ -291,10 +300,10 @@ export const PHASE_VERBS: Record<PhaseId, string> = {
   boot: "light",
   theme: "weave",
   normalize: "measure",
-  blockify: "cast",
   plugin: "score",
   import: "bind",
   verify: "read",
   fix: "revise",
   testfix: "test",
+  tune: "tune",
 };

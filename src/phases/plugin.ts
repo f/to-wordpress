@@ -34,17 +34,6 @@ export async function runPlugin(ctx: MigrationContext, bus: UiBus): Promise<void
         .join("\n\n")
     : "(no SSG plugins detected)";
 
-  // Read the blockify manifest so the plugin prompt knows which blocks exist.
-  const blocksManifestPath = join(ctx.workDir, "blocks.json");
-  let blocksManifest: { blocks?: Array<{ name: string; slug: string }> } = {};
-  if (existsSync(blocksManifestPath)) {
-    try {
-      blocksManifest = JSON.parse(await readFile(blocksManifestPath, "utf8"));
-    } catch {
-      /* ignore */
-    }
-  }
-
   const prompt = interpolate(tpl, {
     PLUGIN_DIR: ctx.pluginDir,
     PLUGIN_SLUG: detected.pluginSlug,
@@ -59,11 +48,7 @@ export async function runPlugin(ctx: MigrationContext, bus: UiBus): Promise<void
     SHORTCODES_LIST: discoveredShortcodes.length > 0
       ? discoveredShortcodes.map((n) => `- towp_${n}`).join("\n")
       : "(none detected)",
-    SHORTCODES_LIST_PHP: discoveredShortcodes.length > 0
-      ? discoveredShortcodes.map((n) => `'${n.replace(/'/g, "\\'")}'`).join(", ")
-      : "",
     SSG_PLUGINS_SOURCE: ssgPluginsBlock,
-    BLOCKS_JSON: JSON.stringify(blocksManifest.blocks ?? [], null, 2),
   });
 
   const result = await runCopilotPhase(bus, "plugin", {

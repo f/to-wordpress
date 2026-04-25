@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useInput, useStdin, useStdout } from "ink";
+import TextInput from "ink-text-input";
 import Spinner from "ink-spinner";
 import type { PhaseId, PhaseStatus, LoopStatusEvent } from "../types.js";
 import {
@@ -8,6 +9,7 @@ import {
   type EtaUpdate,
   type LogEntry,
   type MigrationSummary,
+  type TuneTasks,
 } from "./bus.js";
 import { formatDuration } from "../phases/eta.js";
 
@@ -74,10 +76,23 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
   const [eta, setEta] = useState<EtaUpdate | null>(null);
   const [summary, setSummary] = useState<MigrationSummary | null>(null);
   const [loopState, setLoopState] = useState<LoopState | null>(null);
+  const [tuneInput, setTuneInput] = useState("");
+  const [tuneTasks, setTuneTasks] = useState<TuneTasks | null>(null);
 
   useInput(
     (input, key) => {
-      if (input === "q" || (key.ctrl && input === "c")) {
+      if (doneExit === 0 && tuneTasks) {
+        if (input.toLowerCase() === "y" || key.return) {
+          bus.emit("tune:build", tuneTasks);
+          setTuneTasks(null);
+          return;
+        }
+        if (input.toLowerCase() === "n" || key.escape) {
+          setTuneTasks(null);
+          return;
+        }
+      }
+      if ((doneExit === null && input === "q") || (key.ctrl && input === "c")) {
         onExit?.();
         return;
       }
@@ -87,10 +102,9 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
   );
 
   useEffect(() => {
-    if (doneExit !== null) return;
-    const iv = setInterval(() => setNow(Date.now()), 1000);
+    const iv = setInterval(() => setNow(Date.now()), 500);
     return () => clearInterval(iv);
-  }, [doneExit]);
+  }, []);
 
   useEffect(() => {
     let flushTimer: NodeJS.Timeout | null = null;
@@ -121,6 +135,7 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
     const onDone = (exitCode: number) => setDoneExit(exitCode);
     const onEta = (update: EtaUpdate) => setEta(update);
     const onSummary = (s: MigrationSummary) => setSummary(s);
+    const onTuneTasks = (tasks: TuneTasks) => setTuneTasks(tasks);
     const onLoopStatus = (ls: LoopStatusEvent) => {
       setLoopState({
         phase: ls.phase,
@@ -136,6 +151,7 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
     bus.on("done", onDone);
     bus.on("eta", onEta);
     bus.on("summary", onSummary);
+    bus.on("tune:tasks", onTuneTasks);
     bus.on("loop_status", onLoopStatus);
     return () => {
       bus.off("log", onLog);
@@ -143,6 +159,7 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
       bus.off("done", onDone);
       bus.off("eta", onEta);
       bus.off("summary", onSummary);
+      bus.off("tune:tasks", onTuneTasks);
       bus.off("loop_status", onLoopStatus);
       if (flushTimer) clearTimeout(flushTimer);
     };
@@ -152,9 +169,10 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
   const HEADER_ROWS = 5;
   const FOOTER_ROWS = 3;
   const SUMMARY_ROWS = summary ? 9 : 0;
+  const TUNE_ROWS = summary && doneExit === 0 ? 10 : 0;
   const bodyRows = Math.max(
     6,
-    size.rows - HEADER_ROWS - FOOTER_ROWS - SUMMARY_ROWS,
+    size.rows - HEADER_ROWS - FOOTER_ROWS - SUMMARY_ROWS - TUNE_ROWS,
   );
 
   const PANE_CHROME_ROWS = 2;
@@ -235,6 +253,7 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
           phases={phases}
           activePhase={runningPhase?.id}
           loopState={loopState}
+          now={now}
         />
         <Box width={1} />
         <Box flexDirection="column" width={rightWidth} height={bodyRows}>
@@ -254,6 +273,17 @@ export function App({ bus, sourceDir, phaseOrder, onExit }: AppProps) {
       </Box>
 
       {summary ? <SummaryCard summary={summary} width={size.cols} /> : null}
+
+      {summary && doneExit === 0 ? (
+        <TuneRoom
+          bus={bus}
+          width={size.cols}
+          value={tuneInput}
+          onChange={setTuneInput}
+          tasks={tuneTasks}
+          onSubmitted={() => setTuneInput("")}
+        />
+      ) : null}
 
       <Footer
         doneExit={doneExit}
@@ -374,6 +404,7 @@ function CantosPane({
   phases,
   activePhase,
   loopState,
+  now,
 }: {
   width: number;
   height: number;
@@ -381,6 +412,7 @@ function CantosPane({
   phases: Record<PhaseId, PhaseRowState>;
   activePhase?: PhaseId;
   loopState: LoopState | null;
+  now: number;
 }) {
   return (
     <Box
@@ -407,7 +439,7 @@ function CantosPane({
             : "";
         return (
           <Box key={id}>
-            <Text color={statusColor(p.status)}>{statusGlyph(p.status)}</Text>
+            <Text color={statusColor(p.status)}>{statusGlyph(p.status, now)}</Text>
             <Text> </Text>
             <Text
               color={isActive ? WP_BLUE : statusColor(p.status)}
@@ -545,6 +577,66 @@ function MusePane({
 
 // ─── Footer ───────────────────────────────────────────────────────────
 
+function TuneRoom({
+  bus,
+  width,
+  value,
+  onChange,
+  tasks,
+  onSubmitted,
+}: {
+  bus: UiBus;
+  width: number;
+  value: string;
+  onChange: (v: string) => void;
+  tasks: TuneTasks | null;
+  onSubmitted: () => void;
+}) {
+  const submit = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    bus.emit("tune:request", { text: trimmed });
+    onSubmitted();
+  };
+  return (
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor="yellow"
+      paddingX={1}
+      width={width}
+      flexShrink={0}
+    >
+      <Text color="yellow" bold>
+        Tune the Press
+      </Text>
+      <Text color={CHROME} wrap="wrap">
+        Whisper the small things still off — theme drift, missing links, odd spacing, shortcode quirks — and I will score them into a repair list.
+      </Text>
+      {tasks ? (
+        <>
+          <Text color="green" bold>
+            Plan is ready, go? <Text color="white">Y/n</Text>
+          </Text>
+          <Text color={CHROME}>
+            Press Y (or Enter) to let the agent work through the repair list. Press n/Esc to keep the plan only.
+          </Text>
+        </>
+      ) : (
+        <>
+          <Box>
+            <Text color="cyan">› </Text>
+            <TextInput value={value} onChange={onChange} onSubmit={submit} placeholder="e.g. mobile menu overlaps the hero; /blog page spacing is wrong" />
+          </Box>
+          <Text color={CHROME}>
+            The agent's draft and file path will appear in Press.
+          </Text>
+        </>
+      )}
+    </Box>
+  );
+}
+
 function Footer({
   doneExit,
   width,
@@ -567,7 +659,7 @@ function Footer({
         </Text>
       ) : doneExit === 0 ? (
         <Text color="green" bold wrap="truncate-end">
-          ✦ the volume is bound — q to close
+          ✦ the volume is bound — tune above, Ctrl-C to close
         </Text>
       ) : (
         <Text color="red" bold wrap="truncate-end">
@@ -673,12 +765,12 @@ function truncateMiddle(s: string, max: number): string {
   return s.slice(0, keep) + "…" + s.slice(-keep);
 }
 
-function statusGlyph(s: PhaseStatus): string {
+function statusGlyph(s: PhaseStatus, now = Date.now()): string {
   switch (s) {
     case "pending":
       return "○";
     case "running":
-      return "◐";
+      return ["◐", "◓", "◑", "◒"][Math.floor(now / 500) % 4];
     case "ok":
       return "●";
     case "fail":

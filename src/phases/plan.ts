@@ -60,7 +60,7 @@ export async function runPlan(ctx: MigrationContext, bus: UiBus): Promise<UserCh
   const frontPageSlug =
     ov.frontPage ?? pages.find((p) => p.role === "front")?.slug;
   const blogIndexPageSlug =
-    ov.blogIndex ?? pages.find((p) => p.role === "blog-index")?.slug;
+    ov.blogIndex ?? pages.find((p) => p.role === "blog-index")?.slug ?? inferBlogIndexSlug(detected);
   const privacyPageSlug =
     ov.privacyPage ?? pages.find((p) => p.role === "privacy")?.slug;
 
@@ -173,6 +173,13 @@ function inferPrefix(permalink?: string): string {
   if (!permalink) return "";
   const m = permalink.match(/^\/([^/:]+)\//);
   return m ? m[1] : "";
+}
+
+function inferBlogIndexSlug(detected: NonNullable<MigrationContext["detected"]>): string | undefined {
+  const posts = detected.collections.find((c) => c.name === "posts");
+  const prefix = inferPrefix(posts?.permalink);
+  if (prefix && !prefix.startsWith(":")) return prefix;
+  return undefined;
 }
 
 function singular(name: string): string {

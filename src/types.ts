@@ -6,12 +6,12 @@ export type PhaseId =
   | "boot"
   | "theme"
   | "normalize"
-  | "blockify"
   | "plugin"
   | "import"
   | "verify"
   | "fix"
-  | "testfix";
+  | "testfix"
+  | "tune";
 
 export type PhaseStatus = "pending" | "running" | "ok" | "fail" | "skipped";
 

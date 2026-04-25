@@ -4,7 +4,7 @@
 
 Produce a single site-specific WordPress plugin targeting **WordPress
 6.9+** (PHP 7.2.24+) that owns everything "non-theme" about the source
-site: custom post types, taxonomies, custom blocks/shortcodes, comments
+site: custom post types, taxonomies, **shortcodes**, comments
 integration, newsletter, analytics, cookie banner, redirects map, **AND
 every custom behavior from the source SSG's plugins** (generators,
 custom endpoints, alternate views). These concerns must survive a theme
@@ -39,13 +39,7 @@ file MUST be a minimal bootstrap. ALL business logic lives in
 │   ├── analytics-ga.php     # If features.googleAnalyticsId
 │   ├── cookie-banner.php    # If features.cookieBanner
 │   ├── dark-mode.php        # If features.darkMode
-│   ├── social-meta.php      # If features.twitterSite
-│   └── blocks.php           # Dynamic blocks (optional)
-├── blocks/                  # Custom blocks (optional)
-│   └── <name>/
-│       ├── block.json       # apiVersion 3 + $schema
-│       ├── render.php
-│       └── style.css
+│   └── social-meta.php      # If features.twitterSite
 └── languages/               # Translations (if any)
 ```
 
@@ -257,7 +251,6 @@ a stub.
 | Dark mode | `includes/dark-mode.php` | `features.darkMode` |
 | Social meta | `includes/social-meta.php` | `features.twitterSite` or similar |
 | Options page | `includes/options.php` | always |
-| Dynamic blocks | `includes/blocks.php` + `blocks/<name>/` | if custom blocks needed |
 
 ---
 
@@ -309,53 +302,66 @@ add_action( 'init', function () {
 } );
 ```
 
-### Shortcodes (`shortcodes.php`) — legacy fallback only
+### Shortcodes (`shortcodes.php`)
 
-The **blockify phase** converted every discovered source shortcode into
-a proper Gutenberg block, and content files now use block markup
-directly. Shortcode handlers are therefore only a legacy fallback for:
+Reusable source fragments must be migrated as **shortcodes**, not
+Gutenberg blocks or dynamic blocks. The normalize phase rewrites Liquid includes into
+`[towp_<name> ...]` shortcodes, and the classic theme styles the output
+with CSS. This plugin must register a real handler for every discovered
+name below:
 
-- Hand-written posts a user adds later that still use bracket syntax.
-- Backward compatibility if a user pastes old content into the editor.
+```json
+{{SHORTCODES_JSON}}
+```
 
-If **`{{SHORTCODES_JSON}}`** is non-empty, register a minimal
-`shortcodes.php` that delegates to the already-registered blocks:
+{{SHORTCODES_LIST}}
+
+For each shortcode:
+
+1. Find the source include template at `_includes/**/<name>.html` (try
+   `framework/shortcodes/<name>.html`, `shortcodes/<name>.html`, and
+   generic `_includes/**/<name>.html`).
+2. Port its Liquid markup to PHP. Preserve the DOM, classes, attribute
+   names, wrappers, and fallback behavior.
+3. Register the handler on `init` using `add_shortcode( 'towp_<name>', ... )`.
+4. Escape every attribute/output value.
+
+Example shape:
 
 ```php
 <?php
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-/**
- * Legacy shortcode handlers that render through the corresponding block
- * (registered by includes/blocks.php). Keeps old post content usable
- * while the canonical format is the block itself.
- */
 add_action( 'init', function () {
-    $names = [ {{SHORTCODES_LIST_PHP}} ];
-    foreach ( $names as $name ) {
-        add_shortcode( 'towp_' . $name, function ( $atts, $content = null ) use ( $name ) {
-            $atts = is_array( $atts ) ? $atts : [];
-            $block = render_block( [
-                'blockName' => '{{PLUGIN_SLUG}}/' . $name,
-                'attrs'     => $atts,
-                'innerBlocks'   => [],
-                'innerHTML'     => (string) $content,
-                'innerContent'  => [ (string) $content ],
-            ] );
-            return is_string( $block ) ? $block : '';
-        } );
-    }
+    add_shortcode( 'towp_figure', function ( $atts, $content = null ) {
+        $atts = shortcode_atts( [
+            'src'     => '',
+            'alt'     => '',
+            'caption' => '',
+            'class'   => '',
+        ], (array) $atts, 'towp_figure' );
+
+        if ( ! $atts['src'] ) { return ''; }
+
+        $classes = trim( 'towp-shortcode towp-shortcode-figure ' . $atts['class'] );
+        $caption = $atts['caption']
+            ? '<figcaption class="wp-element-caption">' . esc_html( $atts['caption'] ) . '</figcaption>'
+            : '';
+
+        return sprintf(
+            '<figure class="%s"><img src="%s" alt="%s" />%s</figure>',
+            esc_attr( $classes ),
+            esc_url( $atts['src'] ),
+            esc_attr( $atts['alt'] ),
+            $caption
+        );
+    } );
 } );
 ```
 
-Shortcode names that need handlers:
-
-{{SHORTCODES_LIST}}
-
-**Every attribute output from any shortcode callback must be escaped** —
-but prefer using `render_block()` above so the escaping happens inside
-the block's `render.php` (which the blockify phase already wrote
-correctly).
+If no exact source include exists, generate a useful semantic fallback
+for the shortcode type. Do not render literal bracket text. Do not output
+`TODO`.
 
 ### REST routes (`rest-api.php`)
 
@@ -523,46 +529,6 @@ delete_option( '{{PLUGIN_SLUG_UNDERSCORED}}_version' );
 
 // Do NOT delete posts, pages, or media — those belong to the site.
 ```
-
-### Dynamic blocks (`blocks.php`)
-
-The **blockify phase** already generated complete block definitions
-under `{{PLUGIN_DIR}}/blocks/<name>/` (each with `block.json` at
-apiVersion 3, `render.php`, `edit.js`, `style.css`, `editor.css`). Do
-**NOT** regenerate these — they are authoritative.
-
-Your only job in the plugin phase is to register them. `includes/blocks.php`:
-
-```php
-<?php
-if ( ! defined( 'ABSPATH' ) ) { exit; }
-
-add_action( 'init', function () {
-    $blocks_dir = plugin_dir_path( __FILE__ ) . '../blocks';
-    if ( ! is_dir( $blocks_dir ) ) { return; }
-
-    foreach ( (array) glob( $blocks_dir . '/*', GLOB_ONLYDIR ) as $block_dir ) {
-        if ( file_exists( $block_dir . '/block.json' ) ) {
-            register_block_type_from_metadata( $block_dir );
-        }
-    }
-} );
-```
-
-Per https://developer.wordpress.org/reference/functions/register_block_type_from_metadata/ — this single call is enough: WordPress reads `block.json`, registers scripts/styles, wires the render callback, and handles i18n automatically.
-
-The pre-generated blocks already cover this list:
-
-```json
-{{BLOCKS_JSON}}
-```
-
-Do **not** touch the `blocks/` directory — those files are authoritative
-from the blockify phase. The only shortcode handlers you should write
-are the legacy-compatibility ones described below in the Shortcodes
-section.
-
----
 
 ## Scope
 

@@ -1,17 +1,21 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { parse as parseYaml } from "yaml";
 import type { MigrationContext } from "../types.js";
 import type { UiBus } from "../tui/bus.js";
 import { wpCli } from "../wp/wpEnv.js";
 
 export interface VerifyIssue {
-  kind: "missing_post" | "http_error" | "title_mismatch" | "count_mismatch" | "other";
+  kind: "missing_post" | "http_error" | "title_mismatch" | "count_mismatch" | "fatal_html" | "other";
   path?: string;
   expected?: string;
   actual?: string;
   message: string;
 }
+
+const ERROR_TEXT_RE =
+  /(fatal error|uncaught|wp_die|there has been a critical error|parse error|call to undefined function|failed to open stream|warning:\s|notice:\s|deprecated:\s|undefined (?:variable|array key|index))/i;
 
 export interface VerifyReport {
   wpUrl: string;
@@ -60,30 +64,45 @@ export async function runVerify(ctx: MigrationContext, bus: UiBus): Promise<Veri
   }
 
   const sample = idx.items.slice(0, Math.min(20, idx.items.length));
-  for (const item of sample) {
-    const url = new URL(item.originalPermalink, ctx.wpUrl).toString();
+  const samplePaths = sample.map((item) => item.originalPermalink);
+  for (const extraPath of await importantSitePaths(ctx)) {
+    if (!samplePaths.includes(extraPath)) samplePaths.push(extraPath);
+  }
+
+  for (const path of samplePaths.slice(0, 60)) {
+    const url = new URL(path, ctx.wpUrl).toString();
     const res = await fetchSafe(url);
     if (!res) {
-      issues.push({ kind: "http_error", path: item.originalPermalink, message: `fetch failed for ${url}` });
+      issues.push({ kind: "http_error", path, message: `fetch failed for ${url}` });
       continue;
     }
     if (res.status >= 400) {
       issues.push({
         kind: "http_error",
-        path: item.originalPermalink,
+        path,
         message: `status ${res.status} for ${url}`,
       });
       continue;
     }
+    const marker = ERROR_TEXT_RE.exec(res.body);
+    if (marker) {
+      issues.push({
+        kind: "fatal_html",
+        path,
+        actual: marker[0],
+        message: `error marker '${marker[0]}' in HTML for ${url}`,
+      });
+    }
     const title = extractTitle(res.body);
-    const srcParsed = await getFrontmatterTitle(item.path);
+    const item = sample.find((it) => it.originalPermalink === path);
+    const srcParsed = item ? await getFrontmatterTitle(item.path) : undefined;
     if (srcParsed && title && !titlesMatch(title, srcParsed)) {
       issues.push({
         kind: "title_mismatch",
-        path: item.originalPermalink,
+        path,
         expected: srcParsed,
         actual: title,
-        message: `title mismatch at ${item.originalPermalink}`,
+        message: `title mismatch at ${path}`,
       });
     }
   }
@@ -91,7 +110,7 @@ export async function runVerify(ctx: MigrationContext, bus: UiBus): Promise<Veri
   const report: VerifyReport = {
     wpUrl: ctx.wpUrl,
     ok: issues.length === 0,
-    checked: sample.length,
+    checked: samplePaths.length,
     issues,
     countsBySource,
     countsByWp,
@@ -103,7 +122,7 @@ export async function runVerify(ctx: MigrationContext, bus: UiBus): Promise<Veri
   bus.pushStreamEvent("verify", {
     type: "info",
     phase: "verify",
-    message: `checked ${sample.length} urls; ${issues.length} issue${issues.length === 1 ? "" : "s"}`,
+    message: `checked ${samplePaths.length} urls; ${issues.length} issue${issues.length === 1 ? "" : "s"}`,
   });
   bus.pushStreamEvent("verify", {
     type: report.ok ? "phase_ok" : "phase_fail",
@@ -121,6 +140,86 @@ async function fetchSafe(url: string): Promise<{ status: number; body: string } 
   } catch {
     return undefined;
   }
+}
+
+async function importantSitePaths(ctx: MigrationContext): Promise<string[]> {
+  const out = new Set<string>(["/"]);
+  if (ctx.choices?.blogIndexPageSlug) out.add(`/${ctx.choices.blogIndexPageSlug.replace(/^\/+|\/+$/g, "")}/`);
+  if (ctx.choices?.frontPageSlug) out.add(`/${ctx.choices.frontPageSlug.replace(/^\/+|\/+$/g, "")}/`);
+  for (const p of await sourceMenuPaths(ctx)) out.add(p);
+  for (const p of await homePageInternalLinks(ctx)) out.add(p);
+  return Array.from(out);
+}
+
+async function sourceMenuPaths(ctx: MigrationContext): Promise<string[]> {
+  const candidates = [
+    join(ctx.sourceDir, "_data", "menu.yml"),
+    join(ctx.sourceDir, "_data", "menu.yaml"),
+    join(ctx.sourceDir, "_data", "menu.json"),
+  ];
+  for (const file of candidates) {
+    if (!existsSync(file)) continue;
+    try {
+      const raw = await readFile(file, "utf8");
+      const parsed = file.endsWith(".json") ? JSON.parse(raw) : parseYaml(raw);
+      return extractMenuUrls(parsed).filter((u) => u.startsWith("/")).map(normalizePath);
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function extractMenuUrls(value: unknown): string[] {
+  const out: string[] = [];
+  const walk = (v: unknown) => {
+    if (!v) return;
+    if (Array.isArray(v)) {
+      for (const x of v) walk(x);
+      return;
+    }
+    if (typeof v === "object") {
+      const obj = v as Record<string, unknown>;
+      if (typeof obj.url === "string") out.push(obj.url);
+      if (typeof obj.href === "string") out.push(obj.href);
+      if (typeof obj.link === "string") out.push(obj.link);
+      for (const x of Object.values(obj)) walk(x);
+    }
+  };
+  walk(value);
+  return Array.from(new Set(out));
+}
+
+async function homePageInternalLinks(ctx: MigrationContext): Promise<string[]> {
+  try {
+    const res = await fetchSafe(ctx.wpUrl!);
+    if (!res?.body) return [];
+    return extractInternalLinks(res.body, ctx.wpUrl!);
+  } catch {
+    return [];
+  }
+}
+
+function extractInternalLinks(html: string, baseUrl: string): string[] {
+  const out = new Set<string>();
+  const re = /<a\b[^>]*href=["']([^"']+)["'][^>]*>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    const href = m[1];
+    if (!href || href.startsWith("#") || /^(mailto|tel|sms|javascript):/i.test(href)) continue;
+    try {
+      const u = new URL(href, baseUrl);
+      if (u.origin === new URL(baseUrl).origin) out.add(normalizePath(u.pathname));
+    } catch {
+      /* ignore malformed links */
+    }
+  }
+  return Array.from(out);
+}
+
+function normalizePath(p: string): string {
+  const clean = "/" + p.replace(/^\/+|\/+$/g, "");
+  return clean === "/" ? "/" : clean + "/";
 }
 
 function extractTitle(html: string): string | undefined {

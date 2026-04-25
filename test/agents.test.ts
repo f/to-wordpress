@@ -354,6 +354,42 @@ test("claude maps maxAutopilotContinues to --max-turns", () => {
   assert.equal(args[i + 1], "42");
 });
 
+test("copilot --effort defaults to high", () => {
+  const args = buildCopilotArgs({ prompt: "x", cwd: "/tmp" });
+  const i = args.indexOf("--effort");
+  assert.notEqual(i, -1);
+  assert.equal(args[i + 1], "high");
+});
+
+test("claude --effort defaults to high and maps xhigh → max", () => {
+  const high = buildClaudeArgs({ prompt: "x", cwd: "/tmp" });
+  let i = high.indexOf("--effort");
+  assert.notEqual(i, -1);
+  assert.equal(high[i + 1], "high");
+
+  const maxed = buildClaudeArgs({ prompt: "x", cwd: "/tmp", reasoningEffort: "xhigh" });
+  i = maxed.indexOf("--effort");
+  assert.equal(maxed[i + 1], "max");
+});
+
+test("codex sets -c model_reasoning_effort=\"high\" by default", () => {
+  const args = buildCodexArgs({ prompt: "x", cwd: "/tmp" });
+  const i = args.indexOf("-c");
+  assert.notEqual(i, -1);
+  assert.equal(args[i + 1], 'model_reasoning_effort="high"');
+});
+
+test("default models are the 4.7/5.5 family", () => {
+  const copArgs = buildCopilotArgs({ prompt: "x", cwd: "/tmp" });
+  assert.equal(copArgs[copArgs.indexOf("--model") + 1], "claude-opus-4.7");
+
+  const claArgs = buildClaudeArgs({ prompt: "x", cwd: "/tmp" });
+  assert.equal(claArgs[claArgs.indexOf("--model") + 1], "claude-opus-4-7");
+
+  const codArgs = buildCodexArgs({ prompt: "x", cwd: "/tmp" });
+  assert.equal(codArgs[codArgs.indexOf("--model") + 1], "gpt-5.5-codex");
+});
+
 test("both builders accept --resume", () => {
   const copArgs = buildCopilotArgs({ prompt: "x", cwd: "/tmp", resumeSessionId: "sess_c" });
   const claArgs = buildClaudeArgs({ prompt: "x", cwd: "/tmp", resumeSessionId: "sess_d" });

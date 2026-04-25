@@ -2,7 +2,7 @@ import type { CopilotEvent } from "../types.js";
 import type { AgentRunOptions, AgentSpec } from "./types.js";
 import { extractText } from "./shared.js";
 
-export const DEFAULT_COPILOT_MODEL = process.env.COPILOT_MODEL ?? "gpt-5.4";
+export const DEFAULT_COPILOT_MODEL = process.env.COPILOT_MODEL ?? "claude-opus-4.7";
 
 export const DEFAULT_COPILOT_EFFORT: "low" | "medium" | "high" | "xhigh" =
   (process.env.COPILOT_EFFORT as "low" | "medium" | "high" | "xhigh" | undefined) ?? "high";

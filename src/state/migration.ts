@@ -45,12 +45,12 @@ export function emptyDoc(sourceDir: string): MigrationDoc {
       boot: { status: "pending" },
       theme: { status: "pending" },
       normalize: { status: "pending" },
-      blockify: { status: "pending" },
       plugin: { status: "pending" },
       import: { status: "pending" },
       verify: { status: "pending" },
       fix: { status: "pending" },
       testfix: { status: "pending" },
+      tune: { status: "pending" },
     },
     notes: [],
   };

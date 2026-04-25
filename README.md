@@ -2,7 +2,7 @@
 
 <img src="./assets/logo.png" alt="to-wordpress" width="720" />
 
-**Convert static sites, exports, and document folders into a local WordPress migration.**
+**Convert static sites, exports, and document folders into a working WordPress site.**
 
 [![npm](https://img.shields.io/npm/v/to-wordpress.svg?logo=npm&labelColor=222)](https://www.npmjs.com/package/to-wordpress)
 [![downloads](https://img.shields.io/npm/dm/to-wordpress.svg?labelColor=222)](https://www.npmjs.com/package/to-wordpress)
@@ -13,12 +13,12 @@
 
 ---
 
-`to-wordpress` is an AI-assisted migration CLI with one aim: **one
-command to migrate a site into WordPress**.
+`to-wordpress` is an AI-assisted WordPress site builder with one aim:
+**one command to turn an existing source into a working WordPress site**.
 
 It uses the expert WordPress guidance from
 [`WordPress/agent-skills`](https://github.com/WordPress/agent-skills/)
-under the hood, but wraps it in fully automated migration recipes:
+under the hood, but wraps it in fully automated recipes:
 detect the source, plan the move, generate the theme/plugin, import the
 content, verify the result, fix what failed, and leave a tune-up plan if
 you want more polish.
@@ -99,7 +99,7 @@ WORDPRESS_MIGRATION/
   tune-tasks.md         optional post-run repair plan
 ```
 
-Open the migrated site at:
+Open the generated WordPress site at:
 
 ```text
 http://localhost:8888
@@ -125,13 +125,13 @@ CODEX_MODEL=gpt-5.5-codex CODEX_EFFORT=high npx to-wordpress . --agent codex
 
 ## What it does
 
-The migration pipeline is:
+The pipeline is:
 
 1. **Detect** the source type and content structure.
-2. **Plan** the migration using CLI parameters and detected defaults.
+2. **Plan** the site build using CLI parameters and detected defaults.
 3. **Boot** a local WordPress with `wp-env`.
 4. **Theme** the site as a classic PHP WordPress theme.
-5. **Normalize** posts/pages/media into a canonical migration format.
+5. **Normalize** posts/pages/media into a canonical import format.
 6. **Plugin** site-specific behavior: CPTs, taxonomies, shortcodes,
    comments, analytics, redirects, options, and custom endpoints.
 7. **Import** content and media with `wp eval-file`.
@@ -240,7 +240,7 @@ Project layout:
 ```text
 src/agents/     agent adapters: claude, copilot, codex
 src/detectors/  source detectors
-src/phases/     migration phases and retry loop
+src/phases/     site-building phases and retry loop
 src/prompts/    agent prompts
 src/tui/        Ink UI
 src/wp/         wp-env / wp-cli helpers

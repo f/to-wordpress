@@ -19,6 +19,7 @@ const {
   buildCopilotArgs,
   buildClaudeArgs,
   buildCodexArgs,
+  normalizeCopilotModel,
 } = __testables;
 
 let passed = 0;
@@ -394,6 +395,14 @@ test("default models are the 4.7/5.5 family", () => {
 
   const codArgs = buildCodexArgs({ prompt: "x", cwd: "/tmp" });
   assert.equal(codArgs[codArgs.indexOf("--model") + 1], "gpt-5.5-codex");
+});
+
+test("copilot normalizes Claude Code dash-style model names", () => {
+  assert.equal(normalizeCopilotModel("claude-opus-4-7"), "claude-opus-4.7");
+  assert.equal(normalizeCopilotModel("claude-sonnet-4-7"), "claude-sonnet-4.7");
+  assert.equal(normalizeCopilotModel("gpt-5.5-codex"), "gpt-5.5-codex");
+  const args = buildCopilotArgs({ prompt: "x", cwd: "/tmp", model: "claude-opus-4-7" });
+  assert.equal(args[args.indexOf("--model") + 1], "claude-opus-4.7");
 });
 
 test("both builders accept --resume", () => {

@@ -8,6 +8,16 @@ export const DEFAULT_COPILOT_EFFORT: "low" | "medium" | "high" | "xhigh" =
   (process.env.COPILOT_EFFORT as "low" | "medium" | "high" | "xhigh" | undefined) ?? "high";
 
 /**
+ * GitHub Copilot CLI uses dot-style version names for Anthropic models
+ * (`claude-opus-4.7`), while Claude Code uses dash-style names
+ * (`claude-opus-4-7`). Users often copy the Claude Code slug into
+ * COPILOT_MODEL, so normalize the common Anthropic 4.x shape here.
+ */
+export function normalizeCopilotModel(model: string): string {
+  return model.replace(/^(claude-(?:opus|sonnet)-4)-(\d+)$/, "$1.$2");
+}
+
+/**
  * Build CLI args for the GitHub Copilot CLI. Copilot uses a mix of dashed
  * flags and equals-style flags for allow/deny lists; streaming is enabled
  * by passing `--output-format json --stream on`.
@@ -39,7 +49,7 @@ export function buildCopilotArgs(opts: AgentRunOptions): string[] {
   if (opts.denyTools && opts.denyTools.length > 0) {
     args.push(`--deny-tool=${opts.denyTools.join(",")}`);
   }
-  args.push("--model", opts.model ?? DEFAULT_COPILOT_MODEL);
+  args.push("--model", normalizeCopilotModel(opts.model ?? DEFAULT_COPILOT_MODEL));
   if (opts.resumeSessionId) args.push("--resume", opts.resumeSessionId);
   if (typeof opts.maxAutopilotContinues === "number") {
     args.push("--max-autopilot-continues", String(opts.maxAutopilotContinues));

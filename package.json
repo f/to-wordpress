@@ -1,6 +1,6 @@
 {
   "name": "to-wordpress",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "description": "Migrate anything text-shaped to WordPress — Jekyll, Hugo, Eleventy, Gatsby, Next, Astro, Hexo, Docusaurus, MkDocs, Ghost, WordPress WXR, Medium, Substack, Word docs, spreadsheets, PDFs, EPUBs, READMEs. Driven by GitHub Copilot CLI in a hybrid orchestration model and rendered as an Ink TUI.",
   "type": "module",
   "bin": {

@@ -6,13 +6,14 @@ import type {
   AgentRunResult,
   AgentSpec,
 } from "./types.js";
-import { copilotSpec } from "./copilot.js";
+import { copilotSpec, normalizeCopilotModel } from "./copilot.js";
 import { claudeSpec } from "./claude.js";
 import { codexSpec } from "./codex.js";
 
 export type { AgentKind, AgentRunOptions, AgentRunResult, AgentSpec, CopilotRunOptions, CopilotRunResult } from "./types.js";
 export {
   buildCopilotArgs,
+  normalizeCopilotModel,
   parseCopilotLine,
   copilotSpec,
   DEFAULT_COPILOT_MODEL,
@@ -232,6 +233,7 @@ export const __testables = {
   buildCopilotArgs: copilotSpec.buildArgs,
   buildClaudeArgs: claudeSpec.buildArgs,
   buildCodexArgs: codexSpec.buildArgs,
+  normalizeCopilotModel,
   parseCopilotLine: copilotSpec.parseLine,
   parseClaudeLine: claudeSpec.parseLine,
   parseCodexLine: codexSpec.parseLine,

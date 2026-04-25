@@ -42,6 +42,10 @@ and uses one of three agent CLIs for the creative parts:
 - `copilot`,
 - `codex`.
 
+## Screenshots
+
+![to-wordpress running a migration](./assets/screenshot.png)
+
 ## Install
 
 ```bash
@@ -140,6 +144,8 @@ The pipeline is:
 9. **Testfix** important endpoints and retry fixes when needed.
 10. **Tune the Press** after success: type remaining issues, get a repair
     plan, press `Y` to let the agent apply it.
+
+![Tune the Press post-run flow](./assets/tune-screenshot.png)
 
 Most phases run through an `attempt → test → fix` loop. If a phase fails,
 the selected agent gets the error and recent logs, then attempts a

@@ -1,493 +1,212 @@
 <div align="center">
 
-<img src="./assets/logo.png" alt="to-wordpress — migrate anything to WordPress" width="720" />
+<img src="./assets/logo.png" alt="to-wordpress" width="720" />
 
-**Migrate anything text-shaped to WordPress — driven by your AI coding agent of choice.**
-
-Point it at a Jekyll / Hugo / Eleventy / Gatsby / Next / Astro / Hexo /
-Docusaurus / MkDocs site, a WordPress WXR export, a Medium or Substack
-export, a folder of Word documents, a spreadsheet of rows, a library of
-PDFs, an EPUB, a GitHub repo README, a pile of markdown notes, or plain
-`.txt` files. Walk away. Come back to a fully working, pixel-close
-WordPress under
-[`wp-env`](https://developer.wordpress.org/block-editor/getting-started/devenv/get-started-with-wp-env/)
-with a **classic PHP theme**, a site plugin that replicates every
-SSG-level plugin and custom endpoint, imported content and media,
-preserved permalinks, source reusable parts migrated as WordPress
-**shortcodes**, and an autonomous **attempt → test → fix** verification loop.
+**Convert static sites, exports, and document folders into a local WordPress migration.**
 
 [![npm](https://img.shields.io/npm/v/to-wordpress.svg?logo=npm&labelColor=222)](https://www.npmjs.com/package/to-wordpress)
 [![downloads](https://img.shields.io/npm/dm/to-wordpress.svg?labelColor=222)](https://www.npmjs.com/package/to-wordpress)
 [![license](https://img.shields.io/npm/l/to-wordpress.svg?labelColor=222)](./LICENSE)
 [![node](https://img.shields.io/node/v/to-wordpress.svg?logo=node.js&logoColor=white&labelColor=222)](https://nodejs.org)
 
-[Install](#install) · [Quick start](#quick-start) · [Agents](#agents) · [How it works](#how-it-works) · [Supported sources](#supported-sources) · [CLI](#cli) · [FAQ](#faq)
-
 </div>
 
 ---
 
-## Why
+`to-wordpress` is an AI-assisted migration CLI. Point it at a Jekyll,
+Hugo, Astro, WXR, Medium, Substack, Markdown, DOCX, XLSX, PDF, EPUB,
+README, or plain text source and it builds a local WordPress site with:
 
-Moving a content-heavy static site to WordPress by hand is a week of
-template translation, shortcode rewrites, data shuffling, and URL
-remapping. `to-wordpress` collapses that into one command: a
-deterministic TypeScript pipeline drives your chosen AI coding agent —
-**GitHub Copilot CLI**, **Claude Code**, or **OpenAI Codex** — in a
-hybrid orchestration. The tool owns phase transitions, file I/O,
-verification, and retries; the agent handles the creative parts
-(templates, shortcode/plugin behavior, edge-case normalization,
-diagnosis and repair on failure).
+- a classic PHP theme,
+- a site plugin,
+- imported posts/pages/media,
+- preserved URLs where possible,
+- shortcode ports for reusable source snippets,
+- verification and endpoint checks,
+- and a post-run tuning loop for final polish.
 
-What lands in `wp-content/`:
+It runs WordPress locally with [`@wordpress/env`](https://developer.wordpress.org/block-editor/getting-started/devenv/get-started-with-wp-env/)
+and uses one of three agent CLIs for the creative parts:
 
-- A bespoke **classic WordPress theme** — PHP templates and
-  `template-parts/*.php` mirroring your source layouts/includes.
-- A **site plugin** replicating every non-theme concern including
-  **custom SSG plugins and endpoints** (Jekyll `_plugins/*.rb` →
-  WordPress rewrite rules + dynamic templates; `/llm/` endpoints,
-  generators, category pages, custom feeds).
-- Liquid includes and reusable fragments migrated as WordPress
-  shortcodes (`[towp_<name>]`) registered by the site plugin and styled
-  by the theme.
-- Posts, pages, terms, menus, users, featured images — imported via
-  `wp-cli` with original permalinks preserved by default.
-- A self-written [`WORDPRESS_MIGRATION.md`](#the-migration-doc) that
-  documents every decision so you can audit or replay the run.
-- A post-success **Tune the Press** room: type the last rough edges,
-  get a repair plan, then confirm with `Y` to let the agent apply it.
-
-Every phase runs as an **autonomous agentic loop** — attempt, test,
-fix, repeat. No user prompts. If a phase crashes, the agent is handed
-the error + recent logs and asked to repair before the next retry.
+- `claude` (default),
+- `copilot`,
+- `codex`.
 
 ## Install
 
-`to-wordpress` is meant for one-shot runs, so use `npx` — no global
-install needed:
-
 ```bash
-npx to-wordpress ./path/to/your-site
+npx to-wordpress ./my-site
 ```
 
-Or install globally if you iterate on the same source:
+Or install globally:
 
 ```bash
 npm install -g to-wordpress
-to-wordpress ./path/to/your-site
+to-wordpress ./my-site
 ```
 
-### Requirements
+## Requirements
 
-- **Node.js ≥ 20**
-- **Docker** (for [`wp-env`](https://developer.wordpress.org/block-editor/getting-started/devenv/get-started-with-wp-env/) and the source-prerender container)
-- **At least one AI agent CLI** — pick whichever you already pay for:
-  - **GitHub Copilot CLI** (`copilot`): `brew install --cask github-copilot-cli` then `copilot login`
-  - **Claude Code** (`claude`): [docs.anthropic.com/claude/docs/claude-code](https://docs.anthropic.com/claude/docs/claude-code)
-  - **OpenAI Codex CLI** (`codex`): [github.com/openai/codex](https://github.com/openai/codex)
+- Node.js 20+
+- Docker
+- One agent CLI:
+  - Claude Code: `claude`
+  - GitHub Copilot CLI: `copilot`
+  - OpenAI Codex CLI: `codex`
 
-The tool is self-contained otherwise — no Ruby, no PHP, no wp-cli on
-the host. `wp-env` runs WordPress in Docker and the tool talks to
-wp-cli through it.
+The host machine does not need PHP, Ruby, or wp-cli installed.
 
-## Quick start
+## Usage
 
 ```bash
-# 1. Clone or cd into any static site
-git clone https://github.com/you/your-jekyll-site
-cd your-jekyll-site
+# default agent: Claude Code
+npx to-wordpress ./my-jekyll-site
 
-# 2. Run the migration (default agent: claude)
-npx to-wordpress .
+# use GitHub Copilot CLI
+npx to-wordpress ./my-site --agent copilot
 
-# 3. Open the result
-open http://localhost:8888
+# use Codex
+npx to-wordpress ./my-site --agent codex
+
+# run without an agent, using deterministic fallbacks where available
+npx to-wordpress ./my-site --skip-copilot
 ```
 
-Prefer GitHub Copilot?
+The result is written inside the source folder:
 
-```bash
-npx to-wordpress . --agent copilot
+```text
+WORDPRESS_MIGRATION.md
+WORDPRESS_MIGRATION/
+  theme/                generated classic theme
+  plugin/               generated site plugin
+  content/              normalized post/page markdown
+  media/                copied media assets
+  rendered/             source prerender reference
+  import-manifest.json
+  redirects.json
+  verify-report.json
+  test-fix-report.json
+  tune-tasks.md         optional post-run repair plan
 ```
 
-Prefer Codex?
+Open the migrated site at:
 
-```bash
-npx to-wordpress . --agent codex
-```
-
-When it finishes you'll have:
-
-```
-your-jekyll-site/
-├── .wp-env.json              # theme + plugin + content mounted into WordPress
-├── WORDPRESS_MIGRATION.md    # the plan + per-phase status + state block
-└── WORDPRESS_MIGRATION/
-    ├── theme/                # generated classic theme
-    │   ├── style.css
-    │   ├── functions.php
-    │   ├── header.php / footer.php / single.php / page.php
-    │   └── template-parts/   # PHP parts mirroring source includes
-    ├── plugin/               # site plugin
-    │   ├── <slug>.php        # bootstrap only (header + include loop)
-    │   ├── includes/         # cpt.php, endpoints.php, redirects.php, …
-    ├── content/              # canonical markdown with block markup
-    ├── media/                # collected image assets
-    ├── rendered/             # prerender output (ground truth)
-    ├── import-manifest.json  # exact payload fed to wp-cli
-    ├── shortcodes.json       # shortcode names registered by plugin
-    ├── redirects.json        # old-path → new-path map
-    └── verify-report.json    # URL parity + count diff from the last run
+```text
+http://localhost:8888
 ```
 
 ## Agents
 
-Pick your agent via the `--agent` flag or the `TOWP_AGENT` env var.
-Every phase is agent-agnostic — the same prompts drive any of them,
-and the TUI renders events uniformly.
+Choose an agent with `--agent` or `TOWP_AGENT`.
 
-| Agent | Flag | Model default | Override env |
-|---|---|---|---|
-| Claude Code | `--agent claude` (default) | `claude-opus-4-7`, effort `high` | `CLAUDE_MODEL`, `CLAUDE_EFFORT` |
-| GitHub Copilot CLI | `--agent copilot` | `claude-opus-4.7`, effort `high` | `COPILOT_MODEL`, `COPILOT_EFFORT` |
-| OpenAI Codex CLI | `--agent codex` | `gpt-5.5-codex`, effort `high` | `CODEX_MODEL`, `CODEX_EFFORT` |
+| Agent | Flag | Default model |
+|---|---|---|
+| Claude Code | `--agent claude` | `claude-opus-4-7`, effort `high` |
+| GitHub Copilot CLI | `--agent copilot` | `claude-opus-4.7`, effort `high` |
+| OpenAI Codex CLI | `--agent codex` | `gpt-5.5-codex`, effort `high` |
+
+Environment overrides:
 
 ```bash
-# One-off override
-npx to-wordpress . --agent copilot
-
-# Sticky selection via env
-export TOWP_AGENT=codex
-npx to-wordpress .
-
-# Specific model / effort (claude is the default)
 CLAUDE_MODEL=claude-opus-4-7 CLAUDE_EFFORT=high npx to-wordpress .
+COPILOT_MODEL=claude-opus-4.7 COPILOT_EFFORT=high npx to-wordpress . --agent copilot
+CODEX_MODEL=gpt-5.5-codex CODEX_EFFORT=high npx to-wordpress . --agent codex
 ```
 
-Adding a new agent is a small file under
-[`src/agents/`](./src/agents/) implementing one `AgentSpec` interface
-(binary, arg builder, event parser).
+## What it does
 
-## How it works
+The migration pipeline is:
 
-```mermaid
-flowchart LR
-    src[Source site] --> D[Detect]
-    D --> P[Plan]
-    P --> B[Boot wp-env]
-    B --> T[Theme]
-    T --> N[Normalize]
-    N --> PL[Plugin]
-    PL --> I[Import]
-    I --> V[Verify]
-    V --> TF[Testfix]
-    TF --> WP["Working WordPress @ localhost:8888"]
-```
+1. **Detect** the source type and content structure.
+2. **Plan** the migration using CLI parameters and detected defaults.
+3. **Boot** a local WordPress with `wp-env`.
+4. **Theme** the site as a classic PHP WordPress theme.
+5. **Normalize** posts/pages/media into a canonical migration format.
+6. **Plugin** site-specific behavior: CPTs, taxonomies, shortcodes,
+   comments, analytics, redirects, options, and custom endpoints.
+7. **Import** content and media with `wp eval-file`.
+8. **Verify** post counts, pages, menu URLs, homepage links, titles, and
+   HTML error markers.
+9. **Testfix** important endpoints and retry fixes when needed.
+10. **Tune the Press** after success: type remaining issues, get a repair
+    plan, press `Y` to let the agent apply it.
 
-Every phase runs through a generic **agentic loop**:
-
-```mermaid
-flowchart TD
-    Start[Phase] --> A[attempt]
-    A -->|throws| R[agent diagnoses + patches] --> A
-    A --> T{test}
-    T -->|pass| OK[phase ok]
-    T -->|fail, fix budget| F[agent fixes] --> T
-    T -->|fail, exhausted| Fail[phase fail]
-```
-
-No user prompts. Every retry decision, every repair invocation, every
-fix-pass is parametric via `--max-attempts`, `--max-fix-passes`, and
-`--fail-strategy`.
-
-The left Cantos pane is stateful: reruns hydrate completed/skipped/failed
-phases from `WORDPRESS_MIGRATION.md`, and the running indicator animates
-while a phase is active (including post-success tuning).
-
-| # | Phase | What it does |
-|---|---|---|
-| 1 | **Detect** | Probes the source with one [detector per SSG](./src/detectors/). Falls back to a Copilot/Claude/Codex-driven freestyle detector that reads files and **never skips a folder**. |
-| 2 | **Plan** | Produces `WORDPRESS_MIGRATION.md` with a template map, a feature-to-plugin map, permalink structure, and acceptance criteria. Fully parametric — all choices come from CLI flags with sensible auto-detected defaults. |
-| 3 | **Boot wp-env** | Writes `.wp-env.json`, mounts your theme + plugin + work dir, runs `npx wp-env start`, verifies `GET /` returns 200. |
-| 4 | **Theme** | Builds the source to capture **ground-truth HTML**, mirrors `_sass/`, `assets/`, `_data/`, `_layouts/`, `_includes/` into the theme dir, then drives the agent to emit a **classic PHP theme** — `header.php`, `footer.php`, `front-page.php`, `home.php`, `single.php`, `page.php`, `archive.php`, and `template-parts/*.php` — whose DOM matches the reference. |
-| 5 | **Normalize** | Turns every post/page into canonical markdown with a fixed front-matter schema. Unusual cases are handed to the agent with a strict edge-case prompt. Emits `shortcodes.json` listing every Liquid include found in content. |
-| 6 | **Plugin** | Generates a site plugin covering CPTs, taxonomies, custom REST routes, **SSG-plugin replication** (Jekyll `_plugins/*.rb` generators and custom endpoints like `/llm/` ported to WordPress rewrite rules + dynamic templates), comments, analytics, cookie banner, redirects, options page, and every `[towp_<name>]` shortcode emitted by normalize. |
-| 8 | **Import** | Runs a generated PHP script via `wp eval-file` inside the container to upsert posts, terms, menus, users, and media; sets `show_on_front`; populates the primary menu from `_data/menu.yml`. |
-| 9 | **Verify** | Counts posts per type with wp-cli, fetches a sample of source URLs, diffs titles / H1s / HTTP status. Writes `verify-report.json`. Runs its own internal fix loop: on failure, feeds the report to the agent for surgical edits + re-verifies until clean or the fix budget is exhausted. |
-| 10 | **Testfix** | HTTP endpoint sweep against the live WordPress (up to 60 paths: `/`, blog index, originalPermalinks from `index.json`). 404/500/timeouts/fatal-error HTML markers trigger an agent-driven fix pass up to `--max-fix-passes` times. |
-| 11 | **Tune the press** | After success, keeps the TUI open. Type remaining issues; the agent writes `WORDPRESS_MIGRATION/tune-tasks.md`. The pane asks `Plan is ready, go? Y/n`; `Y` streams an implementation pass into Press. |
-
-### Autonomous retries
-
-Every phase respects the same retry/repair contract:
-
-- On **crash**: the agent is given the error message + the last 120
-  lines of logs and asked to make a surgical repair. Retry up to
-  `--max-attempts` (default 3).
-- On **test fail**: the test result report (structured JSON) is fed
-  back to the agent with the fix prompt. Retry up to
-  `--max-fix-passes` (default 3).
-- On **exhaustion**: behavior controlled by `--fail-strategy`:
-  - `continue` (default) — mark phase failed, proceed to next.
-  - `skip` — mark phase skipped, proceed to next.
-  - `abort` — stop the migration with exit code 2.
-
-No user input needed at any point. Good for CI.
+Most phases run through an `attempt → test → fix` loop. If a phase fails,
+the selected agent gets the error and recent logs, then attempts a
+surgical repair.
 
 ## Supported sources
 
-`to-wordpress` ships detectors for every shape of content we've seen —
-from real SSGs down to "a folder of PDFs". Each detector emits a
-**detector briefing** that steers the theme, plugin, plan, and
-normalize phases; binary/tabular formats are first routed through a
-per-format conversion prompt (see [`src/prompts/convert-*.md`](./src/prompts/))
-that turns the raw source into canonical markdown before the rest of
-the pipeline runs.
+- Jekyll
+- Hugo
+- Eleventy
+- Astro
+- Gatsby
+- Next.js
+- Hexo
+- Docusaurus
+- MkDocs
+- WordPress WXR
+- Ghost JSON
+- Medium exports
+- Substack exports
+- Markdown folders
+- HTML folders
+- DOCX / RTF folders
+- XLSX / CSV / TSV files
+- PDF folders
+- EPUB books
+- README / GitHub repository docs
+- Plain text folders
 
-### Static-site generators
-
-| Source | Kind | What ships |
-|---|---|---|
-| Jekyll | `jekyll` | Posts (`_posts/`, `_drafts/`) + any `collections/<x>/`, pages, layouts, includes, sass, `_data/*`, **`_plugins/*.rb` source code** (ported to WordPress), feature-level detection (giscus, mailchimp, analytics, dark mode, OG/Twitter) |
-| Hugo | `hugo` | Content sections → collections/CPTs, `layouts/**/*.html`, `data/**/*`, `static/` |
-| Eleventy | `eleventy` | `src/` or `content/` posts, njk/liquid/hbs layouts |
-| Hexo | `hexo` | `source/_posts/` posts + `source/*.md` pages, permalink preserved from `_config.yml` |
-| Astro | `astro` | `src/content/<collection>/` collections + `src/pages/*.{astro,md,mdx}` pages |
-| Gatsby | `gatsby` | `src/pages/*.{tsx,jsx}` + `content/**/*.md(x)` |
-| Next.js | `next` | App/Pages router + `content/` / `posts/` / `blog/` markdown |
-
-### Documentation frameworks
-
-| Source | Kind | What ships |
-|---|---|---|
-| Docusaurus | `docusaurus` | `docs/` → docs collection, `blog/` → posts, admonitions → Gutenberg groups |
-| MkDocs (+ Material) | `mkdocs` | `docs/` collection, mkdocs.yml nav mirrored in WordPress menu |
-
-### CMS / platform exports
-
-| Source | Kind | What ships |
-|---|---|---|
-| WordPress WXR | `wp-wxr` | Full `.xml` dump: posts, pages, CPTs, categories, tags, authors, featured images |
-| Ghost export | `ghost-export` | Ghost JSON dump (`posts`, `tags`, `users`) |
-| Medium export | `medium-export` | `posts/<date>_<slug>.html` → posts, gists/tweets → Gutenberg embeds, canonical URL preserved |
-| Substack export | `substack-export` | `posts.csv` + `posts/<id>.html` → posts, paid-only → `private`, podcasts → podcast CPT |
-
-### Raw documents / text piles
-
-| Source | Kind | What ships |
-|---|---|---|
-| Word bundle | `docx-folder` | Folder of `.docx` / `.doc` / `.rtf` → one post per document (pandoc/mammoth) |
-| Spreadsheet | `xlsx-sheet` | `.xlsx` / `.xls` / `.csv` / `.tsv` → one post per row, column → front-matter field |
-| PDF library | `pdf-folder` | Folder of `.pdf` → one post per document, figures become Gutenberg image blocks |
-| EPUB books | `epub-book` | One `.epub` → one post per chapter, book metadata → site identity |
-| Plain text | `text-folder` | Folder of `.txt` / `.rst` → one post per file (first line = title) |
-| Markdown pile | `markdown-folder` | Obsidian / Notion / Zettelkasten exports, wiki-links preserved |
-| Plain HTML | `plain-html` | Every `.html` file as a page, every `.md` file as a post |
-
-### Code repos
-
-| Source | Kind | What ships |
-|---|---|---|
-| GitHub repo | `github-repo` | README → SaaS landing page (hero + feature grid + install CTA), `docs/` → docs collection, LICENSE/CHANGELOG/CONTRIBUTING → separate pages |
-
-### Fallback
-
-| Source | Kind | What ships |
-|---|---|---|
-| **Anything else** | `unknown` | Deterministic file walker + agent-driven schema fill — never skips a folder |
-
-### Adding a new source type
-
-~60 lines of code and one prompt:
-
-1. Drop a detector file in [`src/detectors/`](./src/detectors/),
-   implement `match()` + `detect()`.
-2. Register it in [`src/detectors/index.ts`](./src/detectors/index.ts).
-3. If the source isn't already markdown, declare `rawSources[]` on
-   the `DetectedContext`, pick (or add) a `RawSourceFormat` in
-   [`src/types.ts`](./src/types.ts), and write a
-   `src/prompts/convert-<format>.md`.
+Jekyll `_plugins/*.rb` files are read and passed to the plugin phase so
+custom generators and endpoints, such as `/llm/...` pages or category
+generators, can be recreated in WordPress.
 
 ## CLI
 
-```
+```text
 Usage: to-wordpress [options] [source]
 
-Migrate any codebase to WordPress. Hybrid orchestration with your AI agent.
-
-Arguments:
-  source                      path to the source site to migrate (default: ".")
-
 Options:
-  -v, --version               print version
-  --agent <kind>              which AI agent CLI to use: claude|copilot|codex
-                              (env: TOWP_AGENT) (default: "claude")
-  --fresh                     tear down previous wp-env + wipe WORDPRESS_MIGRATION/
-  --branch <name>             git branch for migration work (default: "to-wordpress")
-  --no-git                    disable git init / branching / per-phase commits
-  --skip-boot                 skip wp-env start (assumes already running)
-  --skip-copilot              use deterministic fallbacks only, don't invoke the agent
-  -y, --yes                   headless mode (no TUI, log to stdout)
-  --only <phase>              run only this phase
-  --from <phase>              start from this phase (skip earlier ones)
-  --until <phase>             stop after this phase (skip later ones)
-  --max-attempts <n>          max crash-retry attempts per phase (default: 3)
-  --max-fix-passes <n>        max test-fail-fix iterations per phase (default: 3)
-  --fail-strategy <strategy>  abort|skip|continue on exhaustion (default: "continue")
+  --agent <claude|copilot|codex>
+  --fresh
+  --branch <name>
+  --no-git
+  --skip-boot
+  --skip-copilot
+  -y, --yes
+  --only <phase>
+  --from <phase>
+  --until <phase>
+  --max-attempts <n>
+  --max-fix-passes <n>
+  --fail-strategy <continue|skip|abort>
 
-Plan overrides (no interactive prompts — everything parametric):
-  --permalinks <mode>         keep (mirror source URLs) | default (/%postname%/)
-                              (default: "keep")
-  --cpts <mode>               all (CPT per collection) | none (import as posts)
-                              (default: "all")
-  --no-redirects              skip generating redirects.json
-  --front-page <slug>         static front page slug (auto-detected if omitted)
-  --blog-index <slug>         blog index page slug (auto-detected if omitted)
-  --privacy-page <slug>       privacy policy page slug (auto-detected if omitted)
-  --admin-user <name>         WP admin username (default: "admin")
-  --admin-password <pass>     WP admin password (default: "password")
-  --admin-email <email>       WP admin email (default: "admin@example.com")
-
-  -h, --help                  display help
+Plan options:
+  --permalinks <keep|default>
+  --cpts <all|none>
+  --no-redirects
+  --front-page <slug>
+  --blog-index <slug>
+  --privacy-page <slug>
+  --admin-user <name>
+  --admin-password <pass>
+  --admin-email <email>
 ```
 
-`<phase>` is one of: `detect`, `plan`, `boot`, `theme`, `normalize`,
-`plugin`, `import`, `verify`, `testfix`, `tune`.
-
-### Re-running just the theme
-
-State is persisted inside `WORDPRESS_MIGRATION.md`, so you can resume
-from any phase:
+Examples:
 
 ```bash
-npx to-wordpress ./my-site --from theme --skip-boot
+# run only through normalization
+npx to-wordpress ./site --until normalize
+
+# rerun from theme with an existing wp-env
+npx to-wordpress ./site --from theme --skip-boot
+
+# CI-style non-interactive run
+npx to-wordpress ./site -y --fail-strategy abort
 ```
-
-### Fully non-interactive (CI)
-
-```bash
-npx to-wordpress ./my-site -y \
-  --agent copilot \
-  --permalinks keep \
-  --cpts all \
-  --max-attempts 5 \
-  --fail-strategy abort
-```
-
-### Skip the agent entirely
-
-```bash
-npx to-wordpress ./my-site --skip-copilot --until normalize
-```
-
-Skipping the agent means every agent-driven step uses the deterministic
-fallback — you still get detect, plan, normalize, and import, just
-without the pixel-perfect theme transforms, custom shortcode/plugin
-behavior, or fix loops.
-
-## The migration doc
-
-`to-wordpress` writes a live, human-readable
-[`WORDPRESS_MIGRATION.md`](./WORDPRESS_MIGRATION.example.md) inside
-your source repo. It contains:
-
-- The phase table with status + timestamps.
-- Overview of the migration and permalink strategy.
-- A template-mapping table (every source layout/include → WP file).
-- A feature-to-output mapping (theme vs plugin vs external plugin).
-- Static page list with roles (front, blog-index, privacy, contact).
-- Post-success tune status and the path to `tune-tasks.md` when you use
-  the tuning room.
-- A `TOWP:STATE` JSON block at the bottom the tool reads back on resume.
-
-You can commit this file — re-running `to-wordpress` updates it in
-place rather than re-planning from scratch.
-
-## Prompts
-
-Every agent-driven phase runs with a rigorously structured prompt in
-[`src/prompts/`](./src/prompts). A shared preamble
-([`_shared.md`](./src/prompts/_shared.md)) gives every phase the same
-autonomy + fidelity contract; each phase adds:
-
-- Explicit **Scope** (which dirs may be written).
-- Explicit **Required output** (every file that must exist).
-- **Non-negotiable rules** (proper escaping, WordPress best practices,
-  classic PHP template structure, shortcode rendering, source DOM parity).
-- Banned **anti-patterns** (no TODOs, no Lorem ipsum, no hard-coded
-  localhost URLs, no silenced PHP errors, no generic WordPress scaffold).
-- A **self-check** the model walks before stopping.
-
-The prompts draw expert-level WordPress knowledge from
-[WordPress/agent-skills](https://github.com/WordPress/agent-skills):
-classic theme structure, Settings API patterns, REST API route
-registration, shortcode rendering, security baseline (nonces +
-capabilities + sanitization/escaping), activation/deactivation hook
-rules.
-
-## FAQ
-
-**Which agent should I pick?** All three work end-to-end. The default
-is Claude Code with Opus 4.7 at high effort because its thinking deltas
-give the richest "Muse" panel and its tool_use events are clean and
-complete. Copilot uses Claude Opus 4.7 through GitHub Copilot at high
-effort. Codex defaults to GPT-5.5 Codex with high reasoning effort
-(some ChatGPT accounts may need `CODEX_MODEL` override). Switch with
-`--agent <kind>` or `TOWP_AGENT`.
-
-**Is my data safe?** The tool writes everything under
-`WORDPRESS_MIGRATION/` inside your source repo and to a local
-`wp-env` Docker volume. No network calls except to the agent's API
-and Docker Hub. Nothing is sent to your live WordPress until you
-decide to deploy the generated theme/plugin.
-
-**Why `wp-env`?** It pins WordPress + PHP versions, runs wp-cli
-in-container, and tears down cleanly. You can export the database
-afterwards with `npx wp-env run cli wp db export`.
-
-**Classic theme, really?** Yes. For this migration use case, classic PHP
-templates are more reliable for source-UI fidelity: the agent can port
-Liquid layouts/includes directly into `header.php`, `front-page.php`,
-`home.php`, `single.php`, `page.php`, and `template-parts/*.php`.
-
-**What happens to my Jekyll `_plugins/*.rb`?** The detector reads
-their source, passes it to the plugin prompt, and the agent writes
-equivalent WordPress code. A typical example: `llm_generator.rb`
-(creates a parallel `/llm/{slug}/` markdown view) becomes
-`includes/endpoints.php` with `add_rewrite_rule` +
-`template_include` + an activation hook that flushes rewrite rules.
-
-**What about my Liquid shortcodes?** Normalize turns every Liquid include
-into `[towp_<name>]`, and the plugin registers a real shortcode handler
-for each source include. The theme styles the shortcode output to match
-the source UI.
-
-**What about pixel-perfect?** The theme phase builds your source site
-into HTML first (inside a container so host Ruby/Node versions don't
-matter), then feeds that ground-truth DOM to the agent as the exact
-target. Verify re-fetches your local WP and diffs structure + titles +
-status; any drift goes back to a scoped fix loop.
-
-**What is Tune the Press?** After a successful run, the TUI stays open
-with a small tuning room. Type remaining issues ("mobile menu overlaps
-the hero", "`/blog/` spacing is off", "LLM view needs source markdown")
-and the selected agent drafts `WORDPRESS_MIGRATION/tune-tasks.md`. When
-the pane asks `Plan is ready, go? Y/n`, press `Y`/Enter to let the agent
-apply the plan. All tuning logs stream into Press, and the tune phase
-animates in Cantos.
-
-**Can I use a live WordPress instead of wp-env?** Not yet — the
-import uses `wp eval-file` inside the `wp-env` cli container. Remote
-WP-via-REST-API is a planned target.
-
-**Does it migrate comments?** Comments stay wherever they live
-(giscus/disqus/commento). The plugin re-attaches the same integration
-in WordPress so threads keep working.
-
-**What's the agent bill?** Expect 4–8 agent sessions per full run
-(detect freestyle if needed, plan, theme, plugin, per-post normalize
-edge cases, verify-fix, testfix, optional tune pass). A ~40-post Jekyll
-site runs in ~20 minutes end-to-end.
 
 ## Development
 
@@ -495,44 +214,45 @@ site runs in ~20 minutes end-to-end.
 git clone https://github.com/f/to-wordpress
 cd to-wordpress
 npm install
-npm run build
-node dist/cli.js ./fixtures/unknown --skip-boot --skip-copilot -y --until normalize
-```
-
-Run type checks, unit tests, and build in watch mode:
-
-```bash
 npm run typecheck
-npm test               # 34 unit tests covering every agent parser + arg builder
-npm run dev
+npm test
+npm run build
 ```
 
-Live smoke test against all three agent CLIs (requires each to be
-installed + authenticated; skips gracefully if any aren't):
+Live agent smoke test:
 
 ```bash
 npx tsx test/agents-live.test.ts
 ```
 
-The codebase is:
+Project layout:
 
-- [`src/cli.tsx`](./src/cli.tsx) — commander entry + Ink TUI bootstrap.
-- [`src/agents/`](./src/agents/) — one file per agent (`copilot.ts`,
-  `claude.ts`, `codex.ts`) implementing `AgentSpec`; `index.ts`
-  dispatches via a registry.
-- [`src/detectors/`](./src/detectors/) — one detector per SSG + freestyle fallback.
-- [`src/phases/`](./src/phases/) — one file per phase, plus
-  [`loop.ts`](./src/phases/loop.ts) (the generic attempt→test→fix
-  runner) and [`loops.ts`](./src/phases/loops.ts) (per-phase
-  `PhaseLoop<T>` factories).
-- [`src/prompts/`](./src/prompts/) — markdown templates + loader.
-- [`src/tui/`](./src/tui/) — Ink app, event bus, headless logger.
-- [`src/wp/`](./src/wp/) — thin wrappers around `npx wp-env` and `wp-cli`.
+```text
+src/agents/     agent adapters: claude, copilot, codex
+src/detectors/  source detectors
+src/phases/     migration phases and retry loop
+src/prompts/    agent prompts
+src/tui/        Ink UI
+src/wp/         wp-env / wp-cli helpers
+```
 
-PRs welcome — especially new detectors, new prompts for specific
-frameworks, new agent integrations, and verify rules that catch more
-drift.
+## Contributing
+
+Issues and PRs are welcome.
+
+This project is currently tested in real-world use primarily against
+**Jekyll** sites. The other detectors and conversion paths are implemented,
+but they need more real migrations, fixtures, and verification feedback.
+
+Useful contributions:
+
+- new detectors,
+- fixtures and test sites for non-Jekyll sources,
+- stronger verification rules,
+- better prompts for specific frameworks,
+- new agent adapters,
+- real-world migration bug reports.
 
 ## License
 
-[MIT](./LICENSE) © Fatih Kadir Akın
+MIT © Fatih Kadir Akın
